@@ -8,6 +8,10 @@
    [aleph.http :as http]
    [exch.utils :as u]))
 
+(import javax.crypto.Mac)
+(import javax.crypto.spec.SecretKeySpec)
+(import org.apache.commons.codec.binary.Hex)
+
 (def binance-intervals
   "Chart intervals: (m)inutes, (h)ours, (d)ays, (w)eeks, (M)onths"
   ["1m" "3m" "5m" "15m" "30m" "1h" "2h" "4h" "6h" "8h" "12h" "1d" "3d" "1w" "1M"])
@@ -254,3 +258,19 @@
 (defn create
   "Create Binance instance"
   [] (Binance. "Binance" (zipmap (map keyword binance-intervals) binance-intervals) binance-candles-limit nil nil))
+
+(defn signature
+  [secret-key]
+  (let [data [[:recvWindow (str 60000)]
+              [:timestamp (str (u/now-ts))]]
+        hmac (Mac/getInstance "HmacSHA256")
+        sec-key (SecretKeySpec. (.getBytes secret-key), "HmacSHA256")]
+    (.init hmac sec-key)
+    (conj data [:signature (->> data u/encode-params .getBytes (.doFinal hmac) Hex/encodeHex String.)])))
+
+(defn get-account-balance
+  [api-key secret-key]
+    (u/http-get-json "https://fapi.binance.com/fapi/v2/balance"
+                     :headers {"Content-Type" "application/x-www-form-urlencoded"
+                               "X-MBX-APIKEY" api-key}
+                     :params (signature secret-key)))

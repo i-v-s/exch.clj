@@ -7,6 +7,7 @@
                  [org.clojure/tools.logging "1.2.1"]
                  [org.clojure/data.json "2.4.0"]
                  [org.clojure/core.async "1.3.610"]
+                 [commons-codec/commons-codec "1.15"]
                  [aleph "0.4.7-alpha7"]]
   :main ^:skip-aot exch.core
   :repl-options {:init-ns exch.core}
