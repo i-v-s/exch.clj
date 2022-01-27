@@ -110,7 +110,7 @@
                          "order_book_updates" (push-ws-depth! push-raw! raw ts pair data)
                          (print-msg ts "Exmo WS unknown update topic: " topic)))
             (println "Exmo WS unknown event: " event))))))
-  (get-candles [_ pair tf start end]
+  (get-candles [_ _ pair tf start end]
     (let [data (u/http-get-json "https://api.exmo.com/v1.1/candles_history"
                                 :symbol (str/replace pair "-" "_")
                                 :resolution (tf exmo-intervals)

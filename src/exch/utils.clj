@@ -2,16 +2,59 @@
   (:require
    [clojure.string :as str]
    [clojure.data.json :as json]
+   [clojure.tools.logging :refer [warn]]
    [aleph.http :as http]
    [byte-streams :as bs]))
 
-(import java.net.URLEncoder)
+(import [java.time LocalDateTime ZoneOffset])
+(import [java.net URLEncoder])
+
+
+(def intervals-map {:1m 60 :3m 180 :5m 300 :15m 900 :30m 1800
+                    :1h 3600 :2h 7200 :4h 14400 :6h (* 6 3600) :8h (* 8 3600) :12h (* 12 3600)
+                    :1d 86400 :3d (* 3 86400) :1w (* 7 86400) :1M (* 31 86400) :1mo (* 31 86400)})
 
 (defprotocol Exchange
   "A protocol that abstracts exchange interactions"
   (get-all-pairs [this] "Return all pairs for current market")
   (gather-ws-loop! [this push-raw! verbose] "Gather raw data via websockets")
   (get-candles [this kind pair interval start end]))
+
+(defmacro with-retry
+  "body must return non false value"
+  [tries & body]
+  (let [e (gensym 'e) left (gensym 'left) result (gensym 'result) wait (gensym 'wait)]
+    `(let [~result (atom nil)]
+       (loop [~left (dec ~tries)]
+         (when
+          (try
+            (reset! ~result (do ~@body))
+            false
+            (catch clojure.lang.ExceptionInfo ~e
+              (if-let [~wait (-> ~e ex-data :retry-after)]
+                (do
+                  (warn (str "Exception (tries left " ~left "): " (ex-message ~e)))
+                  (if (pos? ~left)
+                    (do
+                      (Thread/sleep ~wait)
+                      true)
+                    (throw ~e)))
+                (throw ~e))))
+           (recur (dec ~left))))
+       @~result)))
+
+(defn inc-ts
+  [ts tf & {:keys [mul] :or {mul 1}}]
+  (case tf
+    :1M (-> (LocalDateTime/ofEpochSecond (long (/ ts 1000)) 0 ZoneOffset/UTC)
+            (.plusMonths mul)
+            (.toEpochSecond ZoneOffset/UTC)
+            (* 1000))
+    (+ ts (* mul 1000 (tf intervals-map)))))
+
+(defn dec-ts
+  [ts tf & {:keys [mul] :or {mul 1}}]
+  (inc-ts ts tf :mul (- mul)))
 
 (defn now-ts [] (System/currentTimeMillis))
 
@@ -20,6 +63,17 @@
   (if (nil? ts)
     "<nil>"
     (apply str (java.sql.Timestamp. ts) args)))
+
+(defn candle-seq
+  [exchange kind pair tf & {:keys [start end limit] :or {end (now-ts) limit (:candles-limit exchange)}}]
+  (let [ts (atom start)]
+    (apply concat
+           (for [_ (range)
+                 :let [start @ts]
+                 :while (< start end)]
+             (do (swap! ts inc-ts tf :mul (dec limit))
+                 (with-retry 5
+                   (get-candles exchange kind pair tf start @ts)))))))
 
 (defn encode-params
   [params]
@@ -50,27 +104,3 @@
 
 (def http-get-json (partial http-request-json http/get))
 (def http-post-json (partial http-request-json http/post))
-
-(defmacro with-retry
-  "body must return non false value"
-  [tries & body]
-  (let [e (gensym 'e) left (gensym 'left) result (gensym 'result) wait (gensym 'wait)]
-    `(let [~result (atom nil)]
-       (loop [~left (dec ~tries)]
-         (when
-          (try
-            (reset! ~result (do ~@body))
-            false
-            (catch clojure.lang.ExceptionInfo ~e
-              (if-let [~wait (-> ~e ex-data :retry-after)]
-                (do
-                  (warn (str "Exception (tries left " ~left "): " (ex-message ~e)))
-                  (if (pos? ~left)
-                    (do
-                      (Thread/sleep ~wait)
-                      true)
-                    (throw ~e)))
-                (throw ~e))))
-           (recur (dec ~left))))
-       @~result)))
-

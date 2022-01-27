@@ -163,8 +163,8 @@
 
 (defn get-candles
   "Get candles by REST"
-  [pair interval & {:keys [start end limit]}]
-  (->> (candles-rest-query pair interval :start start :end end :limit limit)
+  [url pair interval & {:keys [start end limit]}]
+  (->> (candles-rest-query url pair interval :start start :end end :limit limit)
        u/http-get-json
        (map transform-candle-rest)))
 
@@ -330,7 +330,7 @@
   (get-all-pairs [_] (all-pairs usdm-info-query))
   (get-candles [_ kind pair interval start end]
     (get-candles (str usdm-url (case kind
-                                 nil    "/v3/klines"
+                                 nil    "/v1/klines"
                                  :cont  "/v1/continuousKlines"
                                  :index "/v1/indexPriceKlines"
                                  :mark  "/v1/markPriceKlines"))
@@ -338,4 +338,7 @@
 
 (defn create
   "Create Binance instance"
-  [] (Binance. "Binance" (zipmap (map keyword binance-intervals) binance-intervals) binance-candles-limit nil nil))
+  [kind]
+  (case kind
+    :spot (Binance. "Binance" (zipmap (map keyword binance-intervals) binance-intervals) binance-candles-limit nil nil)
+    :usdm (BinanceUSDM. "Binance-USDM" (zipmap (map keyword binance-intervals) binance-intervals) binance-candles-limit nil nil)))
