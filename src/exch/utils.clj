@@ -5,6 +5,8 @@
    [aleph.http :as http]
    [byte-streams :as bs]))
 
+(import java.net.URLEncoder)
+
 (defprotocol Exchange
   "A protocol that abstracts exchange interactions"
   (get-all-pairs [this] "Return all pairs for current market")
@@ -19,29 +21,35 @@
     "<nil>"
     (apply str (java.sql.Timestamp. ts) args)))
 
+(defn encode-params
+  [params]
+  (->> params
+       (partition 2)
+       (filter (comp some? last))
+       (map (fn [[k v]]
+              (str (name k) "=" (-> v str (URLEncoder/encode "UTF-8") (.replaceAll "\\+" "%20")))))
+       (str/join "&")))
+
 (defn url-encode-params
   "Encode params in url"
   [url & params]
   (if
    (empty? params)
     url
-    (->> params
-         (apply hash-map)
-         (filter #(some? (last %)))
-         (map (fn [[k v]] (str (name k) "=" v)))
-         (str/join "&")
-         (str url "?"))))
+    (->> params encode-params (str url "?"))))
 
-(defn http-get-json
-  "Get JSON data with HTTP GET request"
-  [url & params]
-  (->>
-   (apply url-encode-params url params)
-   http/get
-   deref
-   :body
-   bs/to-string
-   json/read-str))
+(defn http-request-json
+  "Request JSON data with HTTP GET request"
+  [verb url & {:keys [params headers]}]
+  (-> (apply url-encode-params url params)
+      (verb {:headers headers})
+      deref
+      :body
+      bs/to-string
+      json/read-str))
+
+(def http-get-json (partial http-request-json http/get))
+(def http-post-json (partial http-request-json http/post))
 
 (defmacro with-retry
   "body must return non false value"

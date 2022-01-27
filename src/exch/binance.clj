@@ -36,12 +36,10 @@
 (defn ws-query
   "Prepare websocket request"
   [& streams]
-  (json/write-str {
-    :id 1
-    :method "SUBSCRIBE"
-    :params (apply concat (for [[type pairs] (apply hash-map streams)]
-      (map (partial get-stream type) pairs)))
-  }))
+  (json/write-str {:id 1
+                   :method "SUBSCRIBE"
+                   :params (apply concat (for [[type pairs] (apply hash-map streams)]
+                                           (map (partial get-stream type) pairs)))}))
 
 (def rest-urls {:t "/api/v3/trades" :d "/api/v3/depth"})
 
@@ -53,29 +51,28 @@
   "Prepare REST url request for trades"
   [pair]
   (str
-    "https://www.binance.com/api/v3/trades?symbol="
-    (upper-pair pair)
-    "&limit=1000"))
+   "https://www.binance.com/api/v3/trades?symbol="
+   (upper-pair pair)
+   "&limit=1000"))
 
 (defn depth-rest-query
   "Prepare REST url for depth"
   [pair]
   (str
-    "https://www.binance.com/api/v3/depth?symbol="
-    (upper-pair pair)
-    "&limit=1000"))
+   "https://www.binance.com/api/v3/depth?symbol="
+   (upper-pair pair)
+   "&limit=1000"))
 
 (defn candles-rest-query
   "Prepare REST url for candles query"
   [pair interval & {:keys [start end limit]}]
   (u/url-encode-params
-    "https://api.binance.com/api/v3/klines"
-    :symbol (de-hyphen pair)
-    :interval (name interval)
-    :startTime start
-    :endTime end
-    :limit limit
-    ))
+   "https://api.binance.com/api/v3/klines"
+   :symbol (de-hyphen pair)
+   :interval (name interval)
+   :startTime start
+   :endTime end
+   :limit limit))
 
 (defn transform-trade-ws
   "Transform Binance trade record from websocket to Clickhouse row"
@@ -102,14 +99,12 @@
 
 (defn transform-trade
   "Transform Binance trade record from REST to Clickhouse row"
-  [r] [
-    (get r "id")
-    (new java.sql.Timestamp (get r "time"))
-    (if (get r "isBuyerMaker") 0 1)
-    (Double/parseDouble (get r "price"))
-    (Float/parseFloat (get r "qty"))
-    (Float/parseFloat (get r "quoteQty"))
-  ])
+  [r] [(get r "id")
+       (new java.sql.Timestamp (get r "time"))
+       (if (get r "isBuyerMaker") 0 1)
+       (Double/parseDouble (get r "price"))
+       (Float/parseFloat (get r "qty"))
+       (Float/parseFloat (get r "quoteQty"))])
 
 (defn transform-depth-level
   "Transform Binance depth record to Clickhouse row"
@@ -210,6 +205,15 @@
                    "b" (concat ss-bid bid)))))
       data)))
 
+(defn all-pairs
+  [url]
+  (->> url
+       u/http-get-json
+       w/keywordize-keys
+       :symbols
+       (filter (comp (partial = "TRADING") :status))
+       (map #(str (:baseAsset %) "-" (:quoteAsset %)))))
+
 (defrecord Binance [name intervals-map candles-limit raw candles]
   u/Exchange
   (get-all-pairs [_]
@@ -259,18 +263,68 @@
   "Create Binance instance"
   [] (Binance. "Binance" (zipmap (map keyword binance-intervals) binance-intervals) binance-candles-limit nil nil))
 
+(def usdm-url "https://fapi.binance.com/fapi")
+
 (defn signature
-  [secret-key]
-  (let [data [[:recvWindow (str 60000)]
-              [:timestamp (str (u/now-ts))]]
+  [secret-key & data]
+  (let [data (conj (into [] data)
+                   :recvWindow (str 5000)
+                   :timestamp (str (u/now-ts)))
         hmac (Mac/getInstance "HmacSHA256")
         sec-key (SecretKeySpec. (.getBytes secret-key), "HmacSHA256")]
     (.init hmac sec-key)
-    (conj data [:signature (->> data u/encode-params .getBytes (.doFinal hmac) Hex/encodeHex String.)])))
+    (conj data :signature (->> data u/encode-params .getBytes (.doFinal hmac) Hex/encodeHex String.))))
 
-(defn get-account-balance
-  [api-key secret-key]
-    (u/http-get-json "https://fapi.binance.com/fapi/v2/balance"
-                     :headers {"Content-Type" "application/x-www-form-urlencoded"
-                               "X-MBX-APIKEY" api-key}
-                     :params (signature secret-key)))
+(defn usdm-signed-request
+  [verb url {:keys [api-key secret-key]} & params]
+  (u/http-request-json verb (str usdm-url url)
+                       :headers {"Content-Type" "application/x-www-form-urlencoded"
+                                 "X-MBX-APIKEY" api-key}
+                       :params (apply signature secret-key params)))
+
+(def usdm-signed-get     (partial usdm-signed-request http/get))
+(def usdm-signed-post    (partial usdm-signed-request http/post))
+
+(def usdm-all-pairs      (partial all-pairs (str usdm-url "/v1/exchangeInfo")))
+
+(def usdm-balance        (partial usdm-signed-get "/v2/balance"))
+(def usdm-position-mode  (partial usdm-signed-get "/v1/positionSide/dual"))
+(def usdm-income-history (partial usdm-signed-get "/v1/income"))
+(def usdm-positions      (partial usdm-signed-get "/v2/positionRisk"))
+
+(defn usdm-all-orders
+  [keys symbol]
+  (usdm-signed-get "/v1/allOrders" keys :symbol (de-hyphen symbol)))
+
+(def order-types {:limit "LIMIT" :market "MARKET"})
+(def order-sides {:buy "BUY" :sell "SELL"})
+(def time-in-force-map {:gtc "GTC"; (Good-Til-Canceled) orders are effective until they are executed or canceled.
+                        :ioc "IOC"; (Immediate or Cancel) orders fills all or part of an order immediately and cancels the remaining part of the order.
+                        :fok "FOK"; (Fill or Kill) orders fills all in its entirety, otherwise, the entire order will be cancelled.
+                        :gtx "GTX"; Good Till Crossing (Post Only)
+                        })
+
+(defn usdm-new-order!
+  [keys symbol type side & {:keys [time-in-force quantity price] :or {time-in-force :gtc}}]
+  (apply usdm-signed-post "/v1/order" keys
+         :symbol (de-hyphen symbol)
+         :type (order-types type)
+         :side (order-sides side)
+         (concat
+          (when time-in-force
+            [:timeInForce (time-in-force-map time-in-force)])
+          (when quantity
+            [:quantity quantity])
+          (when price
+            [:price price]))))
+
+(defn usdm-cancel-order!
+  [keys symbol & {:keys [order-id client-order-id]}]
+  (assert (or order-id client-order-id))
+  (apply usdm-signed-request http/delete "/v1/order" keys
+         :symbol (de-hyphen symbol)
+         (concat
+          (when order-id
+            ["orderId" order-id])
+          (when client-order-id
+            ["origClientOrderId" client-order-id]))))
