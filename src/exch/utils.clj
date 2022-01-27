@@ -11,7 +11,7 @@
   "A protocol that abstracts exchange interactions"
   (get-all-pairs [this] "Return all pairs for current market")
   (gather-ws-loop! [this push-raw! verbose] "Gather raw data via websockets")
-  (get-candles [this pair interval start end]))
+  (get-candles [this kind pair interval start end]))
 
 (defn now-ts [] (System/currentTimeMillis))
 

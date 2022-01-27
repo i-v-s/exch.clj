@@ -29,6 +29,9 @@
 
 (def stream-types {:t "@trade" :d "@depth"})
 
+(def spot-url "https://www.binance.com/api")
+(def usdm-url "https://fapi.binance.com/fapi")
+
 (defn get-stream
   "Convert pair to stream topic name"
   [type pair] (str (lower-pair pair) (type stream-types)))
@@ -43,9 +46,8 @@
 
 (def rest-urls {:t "/api/v3/trades" :d "/api/v3/depth"})
 
-(defn info-rest-query
-  []
-  "https://www.binance.com/api/v3/exchangeInfo")
+(def spot-info-query (str spot-url "/v3/exchangeInfo"))
+(def usdm-info-query (str usdm-url "/v1/exchangeInfo"))
 
 (defn trades-rest-query
   "Prepare REST url request for trades"
@@ -65,9 +67,9 @@
 
 (defn candles-rest-query
   "Prepare REST url for candles query"
-  [pair interval & {:keys [start end limit]}]
+  [url pair interval & {:keys [start end limit]}]
   (u/url-encode-params
-   "https://api.binance.com/api/v3/klines"
+   url
    :symbol (de-hyphen pair)
    :interval (name interval)
    :startTime start
@@ -214,56 +216,8 @@
        (filter (comp (partial = "TRADING") :status))
        (map #(str (:baseAsset %) "-" (:quoteAsset %)))))
 
-(defrecord Binance [name intervals-map candles-limit raw candles]
-  u/Exchange
-  (get-all-pairs [_]
-    (->> (info-rest-query)
-         u/http-get-json
-         w/keywordize-keys
-         :symbols
-         (filter #(= (:status %) "TRADING"))
-         (map #(str (:baseAsset %) "-" (:quoteAsset %)))))
-  (gather-ws-loop! [{raw :raw} push-raw! _]
-    (let [{pairs :pairs trades :t} raw
-          pairs-map (zipmap (map lower-pair pairs) pairs)
-          depth-snapshot (atom nil)
-          ws (->> pairs
-                  (map (juxt (partial get-stream :t) (partial get-stream :d)))
-                  (apply concat)
-                  (clojure.string/join "/")
-                  (u/url-encode-params "wss://stream.binance.com:9443/stream" :streams)
-                  http/websocket-client
-                  deref)]
-      (info "Websocket connected")
-      (push-recent-trades! push-raw! trades pairs)
-      (reset! depth-snapshot (into {} (get-current-depths pairs)))
-      (while true (let [chunk (json/read-str @(s/take! ws)) ; null!
-                        {stream "stream" data "data"} chunk
-                        [pair-id topic] (parse-topic stream)
-                        pair (pairs-map pair-id)]
-                    (if (and pair topic)
-                      (try
-                        (case topic
-                          "trade" (push-raw! trades pair [(transform-trade-ws data)])
-                          "depth" (push-ws-depth!
-                                   push-raw!
-                                   raw pair
-                                   (if @depth-snapshot
-                                     (mix-depth pair depth-snapshot data)
-                                     data))
-                          (warn "Binance: unknown stream topic" stream))
-                        (catch Exception e
-                          (error "Сhunk processing exception. Stream" stream "data:\n" data)
-                          (throw e)))
-                      (warn "Binance: unknown stream pair" stream "pair was" pair-id))))))
-  (get-candles [_ pair interval start end]
-    (get-candles pair interval :start start :end end)))
 
-(defn create
-  "Create Binance instance"
-  [] (Binance. "Binance" (zipmap (map keyword binance-intervals) binance-intervals) binance-candles-limit nil nil))
-
-(def usdm-url "https://fapi.binance.com/fapi")
+; USDM Futures
 
 (defn signature
   [secret-key & data]
@@ -328,3 +282,60 @@
             ["orderId" order-id])
           (when client-order-id
             ["origClientOrderId" client-order-id]))))
+
+
+; Exchange record
+
+(defrecord Binance [name intervals-map candles-limit raw candles]
+  u/Exchange
+  (get-all-pairs [_] (all-pairs spot-info-query))
+  (gather-ws-loop! [{raw :raw} push-raw! _]
+    (let [{pairs :pairs trades :t} raw
+          pairs-map (zipmap (map lower-pair pairs) pairs)
+          depth-snapshot (atom nil)
+          ws (->> pairs
+                  (map (juxt (partial get-stream :t) (partial get-stream :d)))
+                  (apply concat)
+                  (clojure.string/join "/")
+                  (u/url-encode-params "wss://stream.binance.com:9443/stream" :streams)
+                  http/websocket-client
+                  deref)]
+      (info "Websocket connected")
+      (push-recent-trades! push-raw! trades pairs)
+      (reset! depth-snapshot (into {} (get-current-depths pairs)))
+      (while true (let [chunk (json/read-str @(s/take! ws)) ; null!
+                        {stream "stream" data "data"} chunk
+                        [pair-id topic] (parse-topic stream)
+                        pair (pairs-map pair-id)]
+                    (if (and pair topic)
+                      (try
+                        (case topic
+                          "trade" (push-raw! trades pair [(transform-trade-ws data)])
+                          "depth" (push-ws-depth!
+                                   push-raw!
+                                   raw pair
+                                   (if @depth-snapshot
+                                     (mix-depth pair depth-snapshot data)
+                                     data))
+                          (warn "Binance: unknown stream topic" stream))
+                        (catch Exception e
+                          (error "Сhunk processing exception. Stream" stream "data:\n" data)
+                          (throw e)))
+                      (warn "Binance: unknown stream pair" stream "pair was" pair-id))))))
+  (get-candles [_ _ pair interval start end]
+    (get-candles (str spot-url "/v3/klines") pair interval :start start :end end)))
+
+(defrecord BinanceUSDM [name intervals-map candles-limit raw candles]
+  u/Exchange
+  (get-all-pairs [_] (all-pairs usdm-info-query))
+  (get-candles [_ kind pair interval start end]
+    (get-candles (str usdm-url (case kind
+                                 nil    "/v3/klines"
+                                 :cont  "/v1/continuousKlines"
+                                 :index "/v1/indexPriceKlines"
+                                 :mark  "/v1/markPriceKlines"))
+                 pair interval :start start :end end)))
+
+(defn create
+  "Create Binance instance"
+  [] (Binance. "Binance" (zipmap (map keyword binance-intervals) binance-intervals) binance-candles-limit nil nil))
