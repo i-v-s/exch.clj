@@ -24,17 +24,67 @@
   (clojure.string/replace item "-" ""))
 
 (def lower-pair (comp clojure.string/lower-case de-hyphen)) ; Convert pair to lower name
-
 (def upper-pair (comp clojure.string/upper-case de-hyphen)) ; Convert pair to upper name
 
 (def stream-types {:t "@trade" :d "@depth"})
 
 (def spot-url "https://www.binance.com/api")
+(def spot-ws-url "wss://stream.binance.com:9443")
 (def usdm-url "https://fapi.binance.com/fapi")
+(def usdm-ws-url "wss://fstream.binance.com")
+
+(def agg-trade-rec {:event-type   ["e"]
+                    :event-ts     ["E"]
+                    :symbol       ["s"]
+                    :agg-trade-id ["a"]
+                    :price        ["p" u/parse-double']
+                    :quantity     ["q" u/parse-float]
+                    :first-id     ["f"]
+                    :last-id      ["l"]
+                    :trade-ts     ["T"]
+                    :trade-sql-ts ["T" u/sql-ts]
+                    :trade-str-ts ["T" (comp str u/sql-ts)]
+                    :buy?         ["m"]})
+
+(def kline-rec {:event-type   ["e"]
+                :event-ts     ["E"]
+                :symbol       ["s"]
+                :open-ts      ["k" "t"]
+                :open-sql-ts  ["k" "t" u/sql-ts]
+                :open-str-ts  ["k" "t" (comp str u/sql-ts)]
+                :close-ts     ["k" "T"]
+                :close-sql-ts ["k" "T" u/sql-ts]
+                :close-str-ts ["k" "T" (comp str u/sql-ts)]
+                :inteval      ["k" "i"]
+                :first-id     ["k" "f"]
+                :last-id      ["k" "L"]
+                :open         ["k" "o" u/parse-double']
+                :close        ["k" "c" u/parse-double']
+                :high         ["k" "h" u/parse-double']
+                :low          ["k" "l" u/parse-double']
+                :volume       ["k" "v" u/parse-float]
+                :trades       ["k" "n"]
+                :closed?      ["k" "x"]
+                :quote        ["k" "q" u/parse-float] ; Quote asset volume
+                :buy-volume   ["k" "V" u/parse-float]
+                :buy-quote    ["k" "Q" u/parse-float] ; Taker buy quote asset volume
+                })
 
 (defn get-stream
   "Convert pair to stream topic name"
   [type pair] (str (lower-pair pair) (type stream-types)))
+
+(defn open-stream
+  ([url stream]
+   (->> (str url "/ws/" stream) http/websocket-client deref))
+  ([url stream & streams]
+   (->> (cons stream streams)
+        (clojure.string/join "/")
+        (u/url-encode-params (str url "/stream") :streams)
+        http/websocket-client
+        deref)))
+
+(defn pair-stream [stream pair] (str (lower-pair pair) "@" stream))
 
 (defn ws-query
   "Prepare websocket request"
@@ -327,6 +377,19 @@
 
 (defrecord BinanceUSDM [name intervals-map candles-limit raw candles]
   u/Exchange
+  (open-streams [_ streams]
+    (apply open-stream usdm-ws-url streams))
+  (stream-agg-trades [m pairs]
+    (->> pairs (map (partial pair-stream "aggTrade")) (u/open-streams m) u/stream-seq!))
+  (stream-agg-trades [m pairs keys]
+    (->> pairs (u/stream-agg-trades m) (map (u/field-parser keys agg-trade-rec))))
+  (stream-candles [m _ tf pairs keys]
+    (assert (keyword? tf))
+    (->> pairs
+         (map (partial pair-stream (str "kline_" (clojure.core/name tf))))
+         (u/open-streams m)
+         u/stream-seq!
+         (map (u/field-parser keys kline-rec))))
   (get-all-pairs [_] (all-pairs usdm-info-query))
   (get-candles [_ kind pair interval start end]
     (get-candles (str usdm-url (case kind

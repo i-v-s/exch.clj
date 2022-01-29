@@ -4,7 +4,8 @@
    [clojure.data.json :as json]
    [clojure.tools.logging :refer [warn]]
    [aleph.http :as http]
-   [byte-streams :as bs]))
+   [byte-streams :as bs]
+   [manifold.stream :as ms]))
 
 (import [java.time LocalDateTime ZoneOffset])
 (import [java.net URLEncoder])
@@ -16,6 +17,9 @@
 
 (defprotocol Exchange
   "A protocol that abstracts exchange interactions"
+  (open-streams [this streams])
+  (stream-agg-trades [this pairs] [this pairs ks])
+  (stream-candles [this kind tf pairs ks])
   (get-all-pairs [this] "Return all pairs for current market")
   (gather-ws-loop! [this push-raw! verbose] "Gather raw data via websockets")
   (get-candles [this kind pair interval start end]))
@@ -83,6 +87,32 @@
        (map (fn [[k v]]
               (str (name k) "=" (-> v str (URLEncoder/encode "UTF-8") (.replaceAll "\\+" "%20")))))
        (str/join "&")))
+
+(defn take-json!
+  [ws]
+  (->> ws ms/take! deref json/read-str))
+
+(def stream-seq! (comp repeatedly (partial partial take-json!)))
+
+(defn parse-double' [s] (Double/parseDouble s))
+(defn parse-float [s] (Float/parseFloat s))
+(defn sql-ts [t] (java.sql.Timestamp. t))
+(defn getter [k] #(get % k))
+
+(defn assert-get [m k]
+  (let [r (m k)]
+    (assert r (str "Unknown key " k))
+    r))
+
+(defn field-parser
+  [keys rec]
+  (apply juxt
+         (map (comp
+               (partial apply comp)
+               (partial map #(if (string? %) (getter %) %))
+               reverse
+               (partial assert-get rec))
+              keys)))
 
 (defn url-encode-params
   "Encode params in url"
