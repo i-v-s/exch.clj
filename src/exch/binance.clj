@@ -46,7 +46,7 @@
                     :trade-str-ts ["T" (comp str u/sql-ts)]
                     :buy?         ["m"]})
 
-(def kline-rec {:event-type   ["e"]
+(def candle-ws-rec {:event-type   ["e"]
                 :event-ts     ["E"]
                 :symbol       ["s"]
                 :open-ts      ["k" "t"]
@@ -69,6 +69,21 @@
                 :buy-volume   ["k" "V" u/parse-float]
                 :buy-quote    ["k" "Q" u/parse-float] ; Taker buy quote asset volume
                 })
+
+(def candle-rec {:open-ts     [0]                 ; Open time
+                 :open-sql-ts [0 u/sql-ts]
+                 :open-str-ts [0 u/sql-ts str]
+                 :open        [1 u/parse-double'] ; Open
+                 :high        [2 u/parse-double'] ; High
+                 :low         [3 u/parse-double'] ; Low
+                 :close       [4 u/parse-double'] ; Close
+                 :volume      [5 u/parse-float]   ; Volume
+                 :close-ts    [6]                 ; Close time
+                 :quote       [7 u/parse-float]   ; Quote asset volume
+                 :trades      [8]                 ; Number of trades
+                 :buy-volume  [9 u/parse-float]   ; Taker buy base asset volume
+                 :buy-quote   [10 u/parse-float]  ; Taker buy quote asset volume
+                 })
 
 (defn get-stream
   "Convert pair to stream topic name"
@@ -213,10 +228,10 @@
 
 (defn get-candles
   "Get candles by REST"
-  [url pair interval & {:keys [start end limit]}]
+  [url pair interval & {:keys [start end limit ts] :or {ts transform-candle-rest}}]
   (->> (candles-rest-query url pair interval :start start :end end :limit limit)
        u/http-get-json
-       (map transform-candle-rest)))
+       (map ts)))
 
 (defn parse-topic
   [topic]
@@ -372,32 +387,34 @@
                           (error "Сhunk processing exception. Stream" stream "data:\n" data)
                           (throw e)))
                       (warn "Binance: unknown stream pair" stream "pair was" pair-id))))))
-  (get-candles [_ _ pair interval start end]
+  (get-candles [_ _ fields interval pair start end]
     (get-candles (str spot-url "/v3/klines") pair interval :start start :end end)))
-
 (defrecord BinanceUSDM [name intervals-map candles-limit raw candles]
   u/Exchange
   (open-streams [_ streams]
     (apply open-stream usdm-ws-url streams))
   (stream-agg-trades [m pairs]
     (->> pairs (map (partial pair-stream "aggTrade")) (u/open-streams m) u/stream-seq!))
-  (stream-agg-trades [m pairs keys]
-    (->> pairs (u/stream-agg-trades m) (map (u/field-parser keys agg-trade-rec))))
-  (stream-candles [m _ tf pairs keys]
+  (stream-agg-trades [m pairs fields]
+    (->> pairs (u/stream-agg-trades m) (map (u/field-parser fields agg-trade-rec))))
+  (stream-candles [m _ tf pairs fields]
     (assert (keyword? tf))
     (->> pairs
          (map (partial pair-stream (str "kline_" (clojure.core/name tf))))
          (u/open-streams m)
          u/stream-seq!
-         (map (u/field-parser keys kline-rec))))
+         (map (u/field-parser fields candle-ws-rec))))
   (get-all-pairs [_] (all-pairs usdm-info-query))
-  (get-candles [_ kind pair interval start end]
+  (get-candles [_ kind fields interval pair start end]
     (get-candles (str usdm-url (case kind
                                  nil    "/v1/klines"
                                  :cont  "/v1/continuousKlines"
                                  :index "/v1/indexPriceKlines"
                                  :mark  "/v1/markPriceKlines"))
-                 pair interval :start start :end end)))
+                 pair interval :start start :end end
+                 :ts (if (empty? fields)
+                       transform-candle-rest
+                       (u/field-parser fields candle-rec)))))
 
 (defn create
   "Create Binance instance"

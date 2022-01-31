@@ -22,7 +22,7 @@
   (stream-candles [this kind tf pairs ks])
   (get-all-pairs [this] "Return all pairs for current market")
   (gather-ws-loop! [this push-raw! verbose] "Gather raw data via websockets")
-  (get-candles [this kind pair interval start end]))
+  (get-candles [this kind fields interval pair start end]))
 
 (defmacro with-retry
   "body must return non false value"
@@ -69,7 +69,7 @@
     (apply str (java.sql.Timestamp. ts) args)))
 
 (defn candle-seq
-  [exchange kind pair tf & {:keys [start end limit] :or {end (now-ts) limit (:candles-limit exchange)}}]
+  [exchange kind tf pair & {:keys [start end limit fields] :or {end (now-ts) limit (:candles-limit exchange)}}]
   (let [ts (atom start)]
     (apply concat
            (for [_ (range)
@@ -77,7 +77,7 @@
                  :while (< start end)]
              (do (swap! ts inc-ts tf :mul (dec limit))
                  (with-retry 5
-                   (get-candles exchange kind pair tf start @ts)))))))
+                   (get-candles exchange kind fields tf pair start @ts)))))))
 
 (defn encode-params
   [params]
@@ -109,7 +109,7 @@
   (apply juxt
          (map (comp
                (partial apply comp)
-               (partial map #(if (string? %) (getter %) %))
+               (partial map #(if (or (string? %) (int? %)) (getter %) %))
                reverse
                (partial assert-get rec))
               keys)))
