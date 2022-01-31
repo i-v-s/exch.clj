@@ -50,11 +50,11 @@
                 :event-ts     ["E"]
                 :symbol       ["s"]
                 :open-ts      ["k" "t"]
-                :open-sql-ts  ["k" "t" u/sql-ts]
-                :open-str-ts  ["k" "t" (comp str u/sql-ts)]
+                :open-ts-sql  ["k" "t" u/sql-ts]
+                :open-ts-str  ["k" "t" u/sql-ts str]
                 :close-ts     ["k" "T"]
-                :close-sql-ts ["k" "T" u/sql-ts]
-                :close-str-ts ["k" "T" (comp str u/sql-ts)]
+                :close-ts-sql ["k" "T" u/sql-ts]
+                :close-ts-str ["k" "T" u/sql-ts str]
                 :inteval      ["k" "i"]
                 :first-id     ["k" "f"]
                 :last-id      ["k" "L"]
@@ -70,19 +70,23 @@
                 :buy-quote    ["k" "Q" u/parse-float] ; Taker buy quote asset volume
                 })
 
-(def candle-rec {:open-ts     [0]                 ; Open time
-                 :open-sql-ts [0 u/sql-ts]
-                 :open-str-ts [0 u/sql-ts str]
-                 :open        [1 u/parse-double'] ; Open
-                 :high        [2 u/parse-double'] ; High
-                 :low         [3 u/parse-double'] ; Low
-                 :close       [4 u/parse-double'] ; Close
-                 :volume      [5 u/parse-float]   ; Volume
-                 :close-ts    [6]                 ; Close time
-                 :quote       [7 u/parse-float]   ; Quote asset volume
-                 :trades      [8]                 ; Number of trades
-                 :buy-volume  [9 u/parse-float]   ; Taker buy base asset volume
-                 :buy-quote   [10 u/parse-float]  ; Taker buy quote asset volume
+(def candle-rec {:open-ts      [0]                 ; Open time
+                 :open-ts-sql  [0 u/sql-ts]
+                 :open-ts-str  [0 u/sql-ts str]
+                 :open-ts-ins  [0 u/ts-to-instant]
+                 :open         [1 u/parse-double'] ; Open
+                 :high         [2 u/parse-double'] ; High
+                 :low          [3 u/parse-double'] ; Low
+                 :close        [4 u/parse-double'] ; Close
+                 :volume       [5 u/parse-float]   ; Volume
+                 :close-ts     [6]                 ; Close time
+                 :close-ts-sql [6 u/sql-ts]        ; Close time
+                 :close-ts-str [6 u/sql-ts str]    ; Close time
+                 :close-ts-ins [6 u/ts-to-instant] ; Close time
+                 :quote        [7 u/parse-float]   ; Quote asset volume
+                 :trades       [8]                 ; Number of trades
+                 :buy-volume   [9 u/parse-float]   ; Taker buy base asset volume
+                 :buy-quote    [10 u/parse-float]  ; Taker buy quote asset volume
                  })
 
 (defn get-stream

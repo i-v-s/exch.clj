@@ -7,7 +7,7 @@
    [byte-streams :as bs]
    [manifold.stream :as ms]))
 
-(import [java.time LocalDateTime ZoneOffset])
+(import [java.time Instant LocalDateTime ZoneOffset])
 (import [java.net URLEncoder])
 
 
@@ -61,6 +61,8 @@
   (inc-ts ts tf :mul (- mul)))
 
 (defn now-ts [] (System/currentTimeMillis))
+
+(defn ts-to-instant [ts] (Instant/ofEpochMilli ts))
 
 (defn ts-str
   [ts & args]
