@@ -18,11 +18,12 @@
 (defprotocol Exchange
   "A protocol that abstracts exchange interactions"
   (open-streams [this streams])
-  (stream-agg-trades [this pairs] [this pairs ks])
-  (stream-candles [this kind tf pairs ks])
+  (agg-trade-stream [this pairs] [this pairs ks])
+  (candle-stream [this kind tf pairs ks])
   (get-all-pairs [this] "Return all pairs for current market")
   (gather-ws-loop! [this push-raw! verbose] "Gather raw data via websockets")
-  (get-candles [this kind fields interval pair start end]))
+  (get-candles [this kind fields interval pair start end])
+  (ticker [this ks] [this pair fields]))
 
 (defmacro with-retry
   "body must return non false value"

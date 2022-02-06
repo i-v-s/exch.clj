@@ -89,6 +89,13 @@
                  :buy-quote    [10 u/parse-float]  ; Taker buy quote asset volume
                  })
 
+(def ticker-rec {:ts         ["time"]
+                 :symbol     ["symbol"]
+                 :bid-price  ["bidPrice" u/parse-double']
+                 :ask-price  ["askPrice" u/parse-double']
+                 :bid-volume ["bidQty" u/parse-float]
+                 :ask-volume ["askQty" u/parse-float]})
+
 (defn get-stream
   "Convert pair to stream topic name"
   [type pair] (str (lower-pair pair) (type stream-types)))
@@ -393,15 +400,16 @@
                       (warn "Binance: unknown stream pair" stream "pair was" pair-id))))))
   (get-candles [_ _ fields interval pair start end]
     (get-candles (str spot-url "/v3/klines") pair interval :start start :end end)))
+
 (defrecord BinanceUSDM [name intervals-map candles-limit raw candles]
   u/Exchange
   (open-streams [_ streams]
     (apply open-stream usdm-ws-url streams))
-  (stream-agg-trades [m pairs]
+  (agg-trade-stream [m pairs]
     (->> pairs (map (partial pair-stream "aggTrade")) (u/open-streams m) u/stream-seq!))
-  (stream-agg-trades [m pairs fields]
-    (->> pairs (u/stream-agg-trades m) (map (u/field-parser fields agg-trade-rec))))
-  (stream-candles [m _ tf pairs fields]
+  (agg-trade-stream [m pairs fields]
+    (->> pairs (u/agg-trade-stream m) (map (u/field-parser fields agg-trade-rec))))
+  (candle-stream [m _ tf pairs fields]
     (assert (keyword? tf))
     (->> pairs
          (map (partial pair-stream (str "kline_" (clojure.core/name tf))))
@@ -418,7 +426,9 @@
                  pair interval :start start :end end
                  :ts (if (empty? fields)
                        transform-candle-rest
-                       (u/field-parser fields candle-rec)))))
+                       (u/field-parser fields candle-rec))))
+  (ticker [_ pair fields]
+    (-> (str usdm-url "/v1/ticker/bookTicker") (u/http-get-json :params [:symbol (de-hyphen pair)]) ((u/field-parser fields ticker-rec)))))
 
 (defn create
   "Create Binance instance"
