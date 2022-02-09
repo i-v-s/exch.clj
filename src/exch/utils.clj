@@ -88,7 +88,7 @@
        (partition 2)
        (filter (comp some? last))
        (map (fn [[k v]]
-              (str (name k) "=" (-> v str (URLEncoder/encode "UTF-8") (.replaceAll "\\+" "%20")))))
+              (str (name k) "=" (str v))))
        (str/join "&")))
 
 (defn take-json!
@@ -128,12 +128,26 @@
 (defn http-request-json
   "Request JSON data with HTTP GET request"
   [verb url & {:keys [params headers]}]
-  (-> (apply url-encode-params url params)
-      (verb {:headers headers})
-      deref
-      :body
-      bs/to-string
-      json/read-str))
+  (let [encoded (apply url-encode-params url params)]
+    (try
+      (-> encoded
+          (verb {:headers headers})
+          deref
+          :body
+          bs/to-string
+          json/read-str)
+      (catch Exception e
+        (warn "http-request-json: Encoded URL was" encoded)
+        (throw e)))))
 
 (def http-get-json (partial http-request-json http/get))
 (def http-post-json (partial http-request-json http/post))
+
+(defn ws-client
+  [url & params]
+  (let [url (apply url-encode-params url params)]
+    (try
+      (-> url http/websocket-client deref)
+      (catch Exception e
+        (warn "ws-client: Encoded URL was" url)
+        (throw e)))))

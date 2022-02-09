@@ -12,21 +12,14 @@
 (import javax.crypto.spec.SecretKeySpec)
 (import org.apache.commons.codec.binary.Hex)
 
+
+; Consts and records
+
 (def binance-intervals
   "Chart intervals: (m)inutes, (h)ours, (d)ays, (w)eeks, (M)onths"
   ["1m" "3m" "5m" "15m" "30m" "1h" "2h" "4h" "6h" "8h" "12h" "1d" "3d" "1w" "1M"])
 
 (def binance-candles-limit 500)
-
-(defn de-hyphen
-  "Remove hyphens from string"
-  [item]
-  (clojure.string/replace item "-" ""))
-
-(def lower-pair (comp clojure.string/lower-case de-hyphen)) ; Convert pair to lower name
-(def upper-pair (comp clojure.string/upper-case de-hyphen)) ; Convert pair to upper name
-
-(def stream-types {:t "@trade" :d "@depth"})
 
 (def spot-url "https://www.binance.com/api")
 (def spot-ws-url "wss://stream.binance.com:9443")
@@ -47,28 +40,28 @@
                     :buy?         ["m"]})
 
 (def candle-ws-rec {:event-type   ["e"]
-                :event-ts     ["E"]
-                :symbol       ["s"]
-                :open-ts      ["k" "t"]
-                :open-ts-sql  ["k" "t" u/sql-ts]
-                :open-ts-str  ["k" "t" u/sql-ts str]
-                :close-ts     ["k" "T"]
-                :close-ts-sql ["k" "T" u/sql-ts]
-                :close-ts-str ["k" "T" u/sql-ts str]
-                :inteval      ["k" "i"]
-                :first-id     ["k" "f"]
-                :last-id      ["k" "L"]
-                :open         ["k" "o" u/parse-double']
-                :close        ["k" "c" u/parse-double']
-                :high         ["k" "h" u/parse-double']
-                :low          ["k" "l" u/parse-double']
-                :volume       ["k" "v" u/parse-float]
-                :trades       ["k" "n"]
-                :closed?      ["k" "x"]
-                :quote        ["k" "q" u/parse-float] ; Quote asset volume
-                :buy-volume   ["k" "V" u/parse-float]
-                :buy-quote    ["k" "Q" u/parse-float] ; Taker buy quote asset volume
-                })
+                    :event-ts     ["E"]
+                    :symbol       ["s"]
+                    :open-ts      ["k" "t"]
+                    :open-ts-sql  ["k" "t" u/sql-ts]
+                    :open-ts-str  ["k" "t" u/sql-ts str]
+                    :close-ts     ["k" "T"]
+                    :close-ts-sql ["k" "T" u/sql-ts]
+                    :close-ts-str ["k" "T" u/sql-ts str]
+                    :inteval      ["k" "i"]
+                    :first-id     ["k" "f"]
+                    :last-id      ["k" "L"]
+                    :open         ["k" "o" u/parse-double']
+                    :close        ["k" "c" u/parse-double']
+                    :high         ["k" "h" u/parse-double']
+                    :low          ["k" "l" u/parse-double']
+                    :volume       ["k" "v" u/parse-float]
+                    :trades       ["k" "n"]
+                    :closed?      ["k" "x"]
+                    :quote        ["k" "q" u/parse-float] ; Quote asset volume
+                    :buy-volume   ["k" "V" u/parse-float]
+                    :buy-quote    ["k" "Q" u/parse-float] ; Taker buy quote asset volume
+                    })
 
 (def candle-rec {:open-ts      [0]                 ; Open time
                  :open-ts-sql  [0 u/sql-ts]
@@ -96,6 +89,23 @@
                  :bid-volume ["bidQty" u/parse-float]
                  :ask-volume ["askQty" u/parse-float]})
 
+
+; Functions
+
+(defn de-hyphen
+  "Remove hyphens from string"
+  [item]
+  (clojure.string/replace item "-" ""))
+
+(def lower-pair (comp clojure.string/lower-case de-hyphen)) ; Convert pair to lower name
+(def upper-pair (comp clojure.string/upper-case de-hyphen)) ; Convert pair to upper name
+
+(defn pair-stream [stream pair] (str (lower-pair pair) "@" stream))
+
+
+
+(def stream-types {:t "@trade" :d "@depth"})
+
 (defn get-stream
   "Convert pair to stream topic name"
   [type pair] (str (lower-pair pair) (type stream-types)))
@@ -109,8 +119,6 @@
         (u/url-encode-params (str url "/stream") :streams)
         http/websocket-client
         deref)))
-
-(defn pair-stream [stream pair] (str (lower-pair pair) "@" stream))
 
 (defn ws-query
   "Prepare websocket request"
@@ -293,7 +301,7 @@
        (map #(str (:baseAsset %) "-" (:quoteAsset %)))))
 
 
-; USDM Futures
+; USDM Futures functions
 
 (defn signature
   [secret-key & data]
@@ -369,13 +377,12 @@
     (let [{pairs :pairs trades :t} raw
           pairs-map (zipmap (map lower-pair pairs) pairs)
           depth-snapshot (atom nil)
-          ws (->> pairs
-                  (map (juxt (partial get-stream :t) (partial get-stream :d)))
-                  (apply concat)
-                  (clojure.string/join "/")
-                  (u/url-encode-params "wss://stream.binance.com:9443/stream" :streams)
-                  http/websocket-client
-                  deref)]
+          ws (do (assert (not-empty pairs))
+                 (->> pairs
+                      (map (juxt (partial get-stream :t) (partial get-stream :d)))
+                      (apply concat)
+                      (clojure.string/join "/")
+                      (u/ws-client "wss://stream.binance.com:9443/stream" :streams)))]
       (info "Websocket connected")
       (push-recent-trades! push-raw! trades pairs)
       (reset! depth-snapshot (into {} (get-current-depths pairs)))
