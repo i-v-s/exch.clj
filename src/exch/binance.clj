@@ -2,9 +2,7 @@
   (:require
    [clojure.string :as str]
    [clojure.walk :as w]
-   [clojure.data.json :as json]
    [clojure.tools.logging :refer [debug info warn error]]
-   [manifold.stream :as s]
    [aleph.http :as http]
    [exch.utils :as u]))
 
@@ -26,22 +24,42 @@
 (def usdm-url "https://fapi.binance.com/fapi")
 (def usdm-ws-url "wss://fstream.binance.com")
 
-(def agg-trade-rec {:event-type   ["e"]
-                    :event-ts     ["E"]
-                    :symbol       ["s"]
-                    :agg-trade-id ["a"]
-                    :price        ["p" u/parse-double']
-                    :quantity     ["q" u/parse-float]
-                    :first-id     ["f"]
-                    :last-id      ["l"]
-                    :trade-ts     ["T"]
-                    :trade-sql-ts ["T" u/sql-ts]
-                    :trade-str-ts ["T" (comp str u/sql-ts)]
-                    :buy?         ["m"]})
+(def base-ws-rec (partial assoc {:event-type ["e"]
+                                 :event-ts   ["E"]
+                                 :symbol     ["s"]}))
 
-(def candle-ws-rec {:event-type   ["e"]
-                    :event-ts     ["E"]
-                    :symbol       ["s"]
+(def trade-ws-rec (base-ws-rec
+                   :id        ["t"] ; Trade ID
+                   :price     ["p" u/parse-double']
+                   :quantity  ["q" u/parse-float]
+                   :buyer-id  ["b"]
+                   :seller-id ["a"]
+                   :trade-ts  ["T"]
+                   :buy?      ["m"]))
+
+(def agg-trade-ws-rec (base-ws-rec
+                       :agg-trade-id ["a"]
+                       :price        ["p" u/parse-double']
+                       :quantity     ["q" u/parse-float]
+                       :first-id     ["f"]
+                       :last-id      ["l"]
+                       :trade-ts     ["T"]
+                       :trade-sql-ts ["T" u/sql-ts]
+                       :trade-str-ts ["T" (comp str u/sql-ts)]
+                       :buy?         ["m"]))
+
+(def depth-level-rec {:price    [first u/parse-double']
+                      :quantity [second u/parse-float]})
+
+(def depth-ws-rec (let [pq-map (partial map (u/field-parser [:price :quantity] depth-level-rec))]
+                    (base-ws-rec
+                     :first-id ["U"] ; First update ID in event
+                     :final-id ["u"] ; Final update ID in event
+                     :bids-pq  ["b" pq-map] ; Bids to be updated
+                     :asks-pq  ["a" pq-map] ; Asks to be updated
+                     )))
+
+(def candle-ws-rec (base-ws-rec
                     :open-ts      ["k" "t"]
                     :open-ts-sql  ["k" "t" u/sql-ts]
                     :open-ts-str  ["k" "t" u/sql-ts str]
@@ -61,7 +79,7 @@
                     :quote        ["k" "q" u/parse-float] ; Quote asset volume
                     :buy-volume   ["k" "V" u/parse-float]
                     :buy-quote    ["k" "Q" u/parse-float] ; Taker buy quote asset volume
-                    })
+                    ))
 
 (def candle-rec {:open-ts      [0]                 ; Open time
                  :open-ts-sql  [0 u/sql-ts]
@@ -82,12 +100,15 @@
                  :buy-quote    [10 u/parse-float]  ; Taker buy quote asset volume
                  })
 
-(def ticker-rec {:ts         ["time"]
-                 :symbol     ["symbol"]
-                 :bid-price  ["bidPrice" u/parse-double']
-                 :ask-price  ["askPrice" u/parse-double']
-                 :bid-volume ["bidQty" u/parse-float]
-                 :ask-volume ["askQty" u/parse-float]})
+(def order-ticker-rec {:ts         ["time"]
+                       :symbol     ["symbol"]
+                       :bid-price  ["bidPrice" u/parse-double']
+                       :ask-price  ["askPrice" u/parse-double']
+                       :bid-volume ["bidQty" u/parse-float]
+                       :ask-volume ["askQty" u/parse-float]})
+
+(def spot-info-query (str spot-url "/v3/exchangeInfo"))
+(def usdm-info-query (str usdm-url "/v1/exchangeInfo"))
 
 
 ; Functions
@@ -100,38 +121,27 @@
 (def lower-pair (comp clojure.string/lower-case de-hyphen)) ; Convert pair to lower name
 (def upper-pair (comp clojure.string/upper-case de-hyphen)) ; Convert pair to upper name
 
-(defn pair-stream [stream pair] (str (lower-pair pair) "@" stream))
+(defn open-stream  [url stream]  (->> (str url "/ws/" stream) u/ws-client))
+(defn open-streams [url streams] (->> streams (clojure.string/join "/") (u/ws-client (str url "/stream") :streams)))
 
+(defn field-parser
+  [fields rec pairs]
+  (comp (->> pairs
+             (zipmap (map de-hyphen pairs))
+             (conj (:symbol rec))
+             (assoc rec :pair)
+             (u/field-parser fields)) #(get % "data")))
 
-
-(def stream-types {:t "@trade" :d "@depth"})
-
-(defn get-stream
-  "Convert pair to stream topic name"
-  [type pair] (str (lower-pair pair) (type stream-types)))
-
-(defn open-stream
-  ([url stream]
-   (->> (str url "/ws/" stream) http/websocket-client deref))
-  ([url stream & streams]
-   (->> (cons stream streams)
-        (clojure.string/join "/")
-        (u/url-encode-params (str url "/stream") :streams)
-        http/websocket-client
-        deref)))
-
-(defn ws-query
-  "Prepare websocket request"
-  [& streams]
-  (json/write-str {:id 1
-                   :method "SUBSCRIBE"
-                   :params (apply concat (for [[type pairs] (apply hash-map streams)]
-                                           (map (partial get-stream type) pairs)))}))
+(defn pair-stream
+  ([stream pair]
+   (str (lower-pair pair) "@" stream))
+  ([rec stream exch pairs fields]
+   (->> pairs (map (partial pair-stream stream)) (u/open-streams exch) u/stream-seq! (map (field-parser fields rec pairs)))))
 
 (def rest-urls {:t "/api/v3/trades" :d "/api/v3/depth"})
 
-(def spot-info-query (str spot-url "/v3/exchangeInfo"))
-(def usdm-info-query (str usdm-url "/v1/exchangeInfo"))
+
+; Legacy
 
 (defn trades-rest-query
   "Prepare REST url request for trades"
@@ -368,61 +378,66 @@
             ["origClientOrderId" client-order-id]))))
 
 
-; Exchange record
+; Exchange records
 
 (defrecord Binance [name intervals-map candles-limit raw candles]
   u/Exchange
-  (get-all-pairs [_] (all-pairs spot-info-query))
-  (gather-ws-loop! [{raw :raw} push-raw! _]
+  ; WS streams
+  (open-streams [_ streams]
+    (open-streams spot-ws-url streams))
+  (trade-stream [this pairs fields]
+    (pair-stream trade-ws-rec "trade" this pairs fields))
+  (agg-trade-stream [this pairs fields]
+    (pair-stream agg-trade-ws-rec "aggTrade" this pairs fields))
+  (gather-ws-loop! [this push-raw! _]
     (let [{pairs :pairs trades :t} raw
           pairs-map (zipmap (map lower-pair pairs) pairs)
           depth-snapshot (atom nil)
           ws (do (assert (not-empty pairs))
                  (->> pairs
-                      (map (juxt (partial get-stream :t) (partial get-stream :d)))
+                      (map (juxt (partial pair-stream "trade") (partial pair-stream "depth")))
                       (apply concat)
-                      (clojure.string/join "/")
-                      (u/ws-client "wss://stream.binance.com:9443/stream" :streams)))]
+                      (u/open-streams this)))]
       (info "Websocket connected")
       (push-recent-trades! push-raw! trades pairs)
       (reset! depth-snapshot (into {} (get-current-depths pairs)))
-      (while true (let [chunk (json/read-str @(s/take! ws)) ; null!
-                        {stream "stream" data "data"} chunk
-                        [pair-id topic] (parse-topic stream)
-                        pair (pairs-map pair-id)]
-                    (if (and pair topic)
-                      (try
-                        (case topic
-                          "trade" (push-raw! trades pair [(transform-trade-ws data)])
-                          "depth" (push-ws-depth!
-                                   push-raw!
-                                   raw pair
-                                   (if @depth-snapshot
-                                     (mix-depth pair depth-snapshot data)
-                                     data))
-                          (warn "Binance: unknown stream topic" stream))
-                        (catch Exception e
-                          (error "Сhunk processing exception. Stream" stream "data:\n" data)
-                          (throw e)))
-                      (warn "Binance: unknown stream pair" stream "pair was" pair-id))))))
+      (doseq [chunk (u/stream-seq! ws)
+              :let [{stream "stream" data "data"} chunk
+                    [pair-id topic] (parse-topic stream)
+                    pair (pairs-map pair-id)]]
+        (if (and pair topic)
+          (try
+            (case topic
+              "trade" (push-raw! trades pair [(transform-trade-ws data)])
+              "depth" (push-ws-depth!
+                       push-raw!
+                       raw pair
+                       (if @depth-snapshot
+                         (mix-depth pair depth-snapshot data)
+                         data))
+              (warn "Binance: unknown stream topic" stream))
+            (catch Exception e
+              (error "Сhunk processing exception. Stream" stream "data:\n" data)
+              (throw e)))
+          (warn "Binance: unknown stream pair" stream "pair was" pair-id)))))
+  ; REST
+  (get-all-pairs [_] (all-pairs spot-info-query))
   (get-candles [_ _ fields interval pair start end]
-    (get-candles (str spot-url "/v3/klines") pair interval :start start :end end)))
+    (get-candles (str spot-url "/v3/klines") pair interval :start start :end end))
+  (order-ticker [_ pair fields]
+    (-> (str usdm-url "/v3/ticker/bookTicker") (u/http-get-json :params [:symbol (de-hyphen pair)]) ((u/field-parser fields order-ticker-rec)))))
 
 (defrecord BinanceUSDM [name intervals-map candles-limit raw candles]
   u/Exchange
+  ; WS streams
   (open-streams [_ streams]
-    (apply open-stream usdm-ws-url streams))
-  (agg-trade-stream [m pairs]
-    (->> pairs (map (partial pair-stream "aggTrade")) (u/open-streams m) u/stream-seq!))
-  (agg-trade-stream [m pairs fields]
-    (->> pairs (u/agg-trade-stream m) (map (u/field-parser fields agg-trade-rec))))
-  (candle-stream [m _ tf pairs fields]
+    (open-streams usdm-ws-url streams))
+  (agg-trade-stream [this pairs fields]
+    (pair-stream agg-trade-ws-rec "aggTrade" this pairs fields))
+  (candle-stream [this _ tf pairs fields]
     (assert (keyword? tf))
-    (->> pairs
-         (map (partial pair-stream (str "kline_" (clojure.core/name tf))))
-         (u/open-streams m)
-         u/stream-seq!
-         (map (u/field-parser fields candle-ws-rec))))
+    (pair-stream candle-ws-rec (str "kline_" (clojure.core/name tf)) this pairs fields))
+  ; REST
   (get-all-pairs [_] (all-pairs usdm-info-query))
   (get-candles [_ kind fields interval pair start end]
     (get-candles (str usdm-url (case kind
@@ -434,8 +449,8 @@
                  :ts (if (empty? fields)
                        transform-candle-rest
                        (u/field-parser fields candle-rec))))
-  (ticker [_ pair fields]
-    (-> (str usdm-url "/v1/ticker/bookTicker") (u/http-get-json :params [:symbol (de-hyphen pair)]) ((u/field-parser fields ticker-rec)))))
+  (order-ticker [_ pair fields]
+    (-> (str usdm-url "/v1/ticker/bookTicker") (u/http-get-json :params [:symbol (de-hyphen pair)]) ((u/field-parser fields order-ticker-rec)))))
 
 (defn create
   "Create Binance instance"

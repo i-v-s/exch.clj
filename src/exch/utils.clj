@@ -8,7 +8,6 @@
    [manifold.stream :as ms]))
 
 (import [java.time Instant LocalDateTime ZoneOffset])
-(import [java.net URLEncoder])
 
 
 (def intervals-map {:1m 60 :3m 180 :5m 300 :15m 900 :30m 1800
@@ -17,13 +16,15 @@
 
 (defprotocol Exchange
   "A protocol that abstracts exchange interactions"
-  (open-streams [this streams])
-  (agg-trade-stream [this pairs] [this pairs ks])
-  (candle-stream [this kind tf pairs ks])
-  (get-all-pairs [this] "Return all pairs for current market")
-  (gather-ws-loop! [this push-raw! verbose] "Gather raw data via websockets")
-  (get-candles [this kind fields interval pair start end])
-  (ticker [this ks] [this pair fields]))
+  (open-streams     [this streams])
+  (trade-stream     [this pairs fields])
+  (depth-stream     [this pairs fields])
+  (agg-trade-stream [this pairs fields])
+  (candle-stream    [this kind tf pairs fields])
+  (get-all-pairs    [this] "Return all pairs for current market")
+  (gather-ws-loop!  [this push-raw! verbose] "Gather raw data via websockets")
+  (get-candles      [this kind fields interval pair start end])
+  (order-ticker     [this pair fields]))
 
 (defmacro with-retry
   "body must return non false value"
@@ -91,11 +92,9 @@
               (str (name k) "=" (str v))))
        (str/join "&")))
 
-(defn take-json!
-  [ws]
-  (->> ws ms/take! deref json/read-str))
+(defn take-json! [ws] (some->> ws ms/take! deref json/read-str))
 
-(def stream-seq! (comp repeatedly (partial partial take-json!)))
+(def stream-seq! (comp (partial remove nil?) repeatedly (partial partial take-json!)))
 
 (defn parse-double' [s] (Double/parseDouble s))
 (defn parse-float [s] (Float/parseFloat s))
