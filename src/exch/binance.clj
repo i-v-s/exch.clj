@@ -107,6 +107,10 @@
                        :bid-volume ["bidQty" u/parse-float]
                        :ask-volume ["askQty" u/parse-float]})
 
+(def recs {:candle    candle-rec
+           :candle-ws candle-ws-rec
+           :trade-ws  trade-ws-rec})
+
 (def spot-info-query (str spot-url "/v3/exchangeInfo"))
 (def usdm-info-query (str usdm-url "/v1/exchangeInfo"))
 
@@ -212,20 +216,6 @@
          price
          (-> q Float/parseFloat (* price) float)]))))
 
-(defn transform-candle-rest
-  "Transform candle record to further processing"
-  [[t, o, h, l, c, v, _, qv, nt, bv, bqv]]
-  [t
-   [(Double/parseDouble o)
-    (Double/parseDouble h)
-    (Double/parseDouble l)
-    (Double/parseDouble c)
-    (Float/parseFloat v)
-    (Float/parseFloat qv)
-    nt
-    (Float/parseFloat bv)
-    (Float/parseFloat bqv)]])
-
 (defn push-recent-trades!
   "Get recent trades from REST and put them by callback"
   [push-raw! trades-cache pairs]
@@ -257,7 +247,7 @@
 
 (defn get-candles
   "Get candles by REST"
-  [url pair interval & {:keys [start end limit ts] :or {ts transform-candle-rest}}]
+  [url pair interval & {:keys [start end limit ts]}]
   (->> (candles-rest-query url pair interval :start start :end end :limit limit)
        u/http-get-json
        (map ts)))
@@ -423,9 +413,10 @@
   ; REST
   (get-all-pairs [_] (all-pairs spot-info-query))
   (get-candles [_ _ fields interval pair start end]
-    (get-candles (str spot-url "/v3/klines") pair interval :start start :end end))
+    (get-candles (str spot-url "/v3/klines") pair interval :start start :end end :ts (u/field-parser fields candle-rec)))
   (order-ticker [_ pair fields]
-    (-> (str usdm-url "/v3/ticker/bookTicker") (u/http-get-json :params [:symbol (de-hyphen pair)]) ((u/field-parser fields order-ticker-rec)))))
+    (-> (str usdm-url "/v3/ticker/bookTicker") (u/http-get-json :params [:symbol (de-hyphen pair)]) ((u/field-parser fields order-ticker-rec))))
+  (get-rec [_ kind] (kind recs)))
 
 (defrecord BinanceUSDM [name intervals-map candles-limit raw candles]
   u/Exchange
@@ -446,15 +437,14 @@
                                  :index "/v1/indexPriceKlines"
                                  :mark  "/v1/markPriceKlines"))
                  pair interval :start start :end end
-                 :ts (if (empty? fields)
-                       transform-candle-rest
-                       (u/field-parser fields candle-rec))))
+                 :ts (u/field-parser fields candle-rec)))
   (order-ticker [_ pair fields]
-    (-> (str usdm-url "/v1/ticker/bookTicker") (u/http-get-json :params [:symbol (de-hyphen pair)]) ((u/field-parser fields order-ticker-rec)))))
+    (-> (str usdm-url "/v1/ticker/bookTicker") (u/http-get-json :params [:symbol (de-hyphen pair)]) ((u/field-parser fields order-ticker-rec))))
+  (get-rec [_ kind] (kind recs)))
 
 (defn create
   "Create Binance instance"
   [kind]
   (case kind
-    :spot (Binance. "Binance" (zipmap (map keyword binance-intervals) binance-intervals) binance-candles-limit nil nil)
+    :spot (Binance.     "Binance"      (zipmap (map keyword binance-intervals) binance-intervals) binance-candles-limit nil nil)
     :usdm (BinanceUSDM. "Binance-USDM" (zipmap (map keyword binance-intervals) binance-intervals) binance-candles-limit nil nil)))

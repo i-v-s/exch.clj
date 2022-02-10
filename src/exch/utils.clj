@@ -24,7 +24,8 @@
   (get-all-pairs    [this] "Return all pairs for current market")
   (gather-ws-loop!  [this push-raw! verbose] "Gather raw data via websockets")
   (get-candles      [this kind fields interval pair start end])
-  (order-ticker     [this pair fields]))
+  (order-ticker     [this pair fields])
+  (get-rec          [this kind]))
 
 (defmacro with-retry
   "body must return non false value"
