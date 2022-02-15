@@ -107,6 +107,20 @@
                        :bid-volume ["bidQty" u/parse-float]
                        :ask-volume ["askQty" u/parse-float]})
 
+(def spot-balance-rec {:asset  ["asset"]
+                       :free   ["free" u/parse-double']
+                       :locked ["locked" u/parse-double']})
+
+(def future-balance-rec {:alias             ["accountAlias"]
+                         :asset             ["asset"]
+                         :balance           ["balance"            u/parse-double'] ; wallet balance
+                         :cross-balance     ["crossWalletBalance" u/parse-double'] ; crossed wallet balance
+                         :cross-pnl         ["crossUnPnl"         u/parse-float]   ; unrealized profit of crossed positions
+                         :free              ["availableBalance"   u/parse-double'] ; available balance
+                         :max-withdraw      ["maxWithdrawAmount"  u/parse-double'] ; maximum amount for transfer out
+                         :margin-available? ["marginAvailable"]                    ; whether the asset can be used as margin in Multi-Assets mode
+                         :update-ts         ["updateTime"]})
+
 (def recs {:candle    candle-rec
            :candle-ws candle-ws-rec
            :trade-ws  trade-ws-rec})
@@ -301,7 +315,7 @@
        (map #(str (:baseAsset %) "-" (:quoteAsset %)))))
 
 
-; USDM Futures functions
+; Signed functions
 
 (defn signature
   [secret-key & data]
@@ -313,19 +327,21 @@
     (.init hmac sec-key)
     (conj data :signature (->> data u/encode-params .getBytes (.doFinal hmac) Hex/encodeHex String.))))
 
-(defn usdm-signed-request
+(defn signed-request
   [verb url {:keys [api-key secret-key]} & params]
-  (u/http-request-json verb (str usdm-url url)
+  (u/http-request-json verb url
                        :headers {"Content-Type" "application/x-www-form-urlencoded"
                                  "X-MBX-APIKEY" api-key}
                        :params (apply signature secret-key params)))
 
-(def usdm-signed-get     (partial usdm-signed-request http/get))
-(def usdm-signed-post    (partial usdm-signed-request http/post))
+(defn usdm-signed-get  [url & args]   (apply signed-request http/get  (str usdm-url url) args))
+(defn usdm-signed-post [url & args]   (apply signed-request http/post (str usdm-url url) args))
+(defn spot-signed-get  [url & args]   (apply signed-request http/get  (str spot-url url) args))
+(defn spot-signed-post [url & args]   (apply signed-request http/post (str spot-url url) args))
+
 
 (def usdm-all-pairs      (partial all-pairs (str usdm-url "/v1/exchangeInfo")))
 
-(def usdm-balance        (partial usdm-signed-get "/v2/balance"))
 (def usdm-position-mode  (partial usdm-signed-get "/v1/positionSide/dual"))
 (def usdm-income-history (partial usdm-signed-get "/v1/income"))
 (def usdm-positions      (partial usdm-signed-get "/v2/positionRisk"))
@@ -359,7 +375,7 @@
 (defn usdm-cancel-order!
   [keys symbol & {:keys [order-id client-order-id]}]
   (assert (or order-id client-order-id))
-  (apply usdm-signed-request http/delete "/v1/order" keys
+  (apply signed-request http/delete (str usdm-url "/v1/order") keys
          :symbol (de-hyphen symbol)
          (concat
           (when order-id
@@ -416,7 +432,12 @@
     (get-candles (str spot-url "/v3/klines") pair interval :start start :end end :ts (u/field-parser fields candle-rec)))
   (order-ticker [_ pair fields]
     (-> (str usdm-url "/v3/ticker/bookTicker") (u/http-get-json :params [:symbol (de-hyphen pair)]) ((u/field-parser fields order-ticker-rec))))
-  (get-rec [_ kind] (kind recs)))
+  (get-rec [_ kind] (kind recs))
+  (get-balance [_ acc-keys fields]
+    (->> (get (spot-signed-get "/v3/account" acc-keys) "balances")
+         (map (comp (juxt first rest)
+                    (u/field-parser (cons :asset fields) spot-balance-rec)))
+         (into {}))))
 
 (defrecord BinanceUSDM [name intervals-map candles-limit raw candles]
   u/Exchange
@@ -440,7 +461,12 @@
                  :ts (u/field-parser fields candle-rec)))
   (order-ticker [_ pair fields]
     (-> (str usdm-url "/v1/ticker/bookTicker") (u/http-get-json :params [:symbol (de-hyphen pair)]) ((u/field-parser fields order-ticker-rec))))
-  (get-rec [_ kind] (kind recs)))
+  (get-rec [_ kind] (kind recs))
+  (get-balance [_ acc-keys fields]
+    (->> (usdm-signed-get "/v2/balance" acc-keys)
+         (map (comp (juxt first rest)
+                    (u/field-parser (cons :asset fields) future-balance-rec)))
+         (into {}))))
 
 (defn create
   "Create Binance instance"

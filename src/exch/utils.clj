@@ -25,7 +25,8 @@
   (gather-ws-loop!  [this push-raw! verbose] "Gather raw data via websockets")
   (get-candles      [this kind fields interval pair start end])
   (order-ticker     [this pair fields])
-  (get-rec          [this kind]))
+  (get-rec          [this kind])
+  (get-balance      [this acc-keys fields]))
 
 (defmacro with-retry
   "body must return non false value"
