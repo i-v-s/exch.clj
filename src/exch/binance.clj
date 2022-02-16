@@ -121,6 +121,20 @@
                          :margin-available? ["marginAvailable"]                    ; whether the asset can be used as margin in Multi-Assets mode
                          :update-ts         ["updateTime"]})
 
+(def usdm-position-rec {:entry        ["entryPrice"       u/parse-double']
+                        :margin-type  ["marginType"] ; "isolated"
+                        :auto-add?    ["isAutoAddMargin"] ; "false"
+                        :isolated     ["isolatedMargin"   u/parse-double']
+                        :leverage     ["leverage"         u/parse-int]
+                        :liquidation  ["liquidationPrice" u/parse-double']
+                        :mark         ["markPrice"        u/parse-double']
+                        :max-notional ["maxNotionalValue" u/parse-double']
+                        :amount       ["positionAmt"      u/parse-float]
+                        :symbol       ["symbol"]
+                        :profit       ["unRealizedProfit" u/parse-float]
+                        :side         ["positionSide"] ; "BOTH"
+                        :update-ts    ["updateTime"]})
+
 (def recs {:candle    candle-rec
            :candle-ws candle-ws-rec
            :trade-ws  trade-ws-rec})
@@ -305,15 +319,29 @@
                    "b" (concat ss-bid bid)))))
       data)))
 
-(defn all-pairs
+(defn trading-symbols
   [url]
   (->> url
        u/http-get-json
        w/keywordize-keys
        :symbols
-       (filter (comp (partial = "TRADING") :status))
+       (filter (comp (partial = "TRADING") :status))))
+
+(defn all-pairs
+  [url]
+  (->> url
+       trading-symbols
        (map #(str (:baseAsset %) "-" (:quoteAsset %)))))
 
+(defn symbol-pair-map
+  [url]
+  (into {}
+        (for [{base :baseAsset quote :quoteAsset symbol :symbol ct :contractType} (trading-symbols url)]
+          [symbol (->> (case ct
+                         "CURRENT_QUARTER" "-Q"
+                         "PERPETUAL" ""
+                         (throw (Exception. (str "Binance: unknown contract type" ct))))
+                       (str base "-" quote))])))
 
 ; Signed functions
 
@@ -344,7 +372,6 @@
 
 (def usdm-position-mode  (partial usdm-signed-get "/v1/positionSide/dual"))
 (def usdm-income-history (partial usdm-signed-get "/v1/income"))
-(def usdm-positions      (partial usdm-signed-get "/v2/positionRisk"))
 
 (defn usdm-all-orders
   [keys symbol]
@@ -439,7 +466,7 @@
                     (u/field-parser (cons :asset fields) spot-balance-rec)))
          (into {}))))
 
-(defrecord BinanceUSDM [name intervals-map candles-limit raw candles]
+(defrecord BinanceUSDM [name intervals-map symbol-pair-map candles-limit raw candles]
   u/Exchange
   ; WS streams
   (open-streams [_ streams]
@@ -466,6 +493,11 @@
     (->> (usdm-signed-get "/v2/balance" acc-keys)
          (map (comp (juxt first rest)
                     (u/field-parser (cons :asset fields) future-balance-rec)))
+         (into {})))
+  (get-positions [_ acc-keys fields]
+    (->> (usdm-signed-get "/v2/positionRisk" acc-keys)
+         (map (comp (juxt (comp @symbol-pair-map first) rest)
+                    (u/field-parser (cons :symbol fields) usdm-position-rec)))
          (into {}))))
 
 (defn create
@@ -473,4 +505,4 @@
   [kind]
   (case kind
     :spot (Binance.     "Binance"      (zipmap (map keyword binance-intervals) binance-intervals) binance-candles-limit nil nil)
-    :usdm (BinanceUSDM. "Binance-USDM" (zipmap (map keyword binance-intervals) binance-intervals) binance-candles-limit nil nil)))
+    :usdm (BinanceUSDM. "Binance-USDM" (zipmap (map keyword binance-intervals) binance-intervals) (delay (symbol-pair-map usdm-info-query)) binance-candles-limit nil nil)))

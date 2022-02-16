@@ -26,7 +26,8 @@
   (get-candles      [this kind fields interval pair start end])
   (order-ticker     [this pair fields])
   (get-rec          [this kind])
-  (get-balance      [this acc-keys fields]))
+  (get-balance      [this acc-keys fields])
+  (get-positions    [this acc-keys fields]))
 
 (defmacro with-retry
   "body must return non false value"
@@ -99,7 +100,8 @@
 (def stream-seq! (comp (partial remove nil?) repeatedly (partial partial take-json!)))
 
 (defn parse-double' [s] (Double/parseDouble s))
-(defn parse-float [s] (Float/parseFloat s))
+(defn parse-float   [s] (Float/parseFloat s))
+(defn parse-int     [s] (Long/parseLong s))
 (defn sql-ts [t] (java.sql.Timestamp. t))
 (defn getter [k] #(get % k))
 
