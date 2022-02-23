@@ -135,6 +135,31 @@
                         :side         ["positionSide"] ; "BOTH"
                         :update-ts    ["updateTime"]})
 
+(def usdm-order-resp-rec {:client-order-id ["clientOrderId"]
+                          :cum-qty         ["cumQty" u/parse-float]
+                          :cum-quote       ["cumQuote" u/parse-float]
+                          :executed-qty    ["executedQty" u/parse-float]
+                          :id              ["orderId" u/parse-int]
+                          :avg-price       ["avgPrice" u/parse-double']
+                          :original-qty    ["origQty" u/parse-float]
+                          :price           ["price" u/parse-double']
+                          :reduce-only     ["reduceOnly"]
+                          :side            ["side" str/lower-case keyword]
+                          :position-side   ["positionSide" str/lower-case keyword]
+                          :status          ["status" str/lower-case keyword]
+                          :stop-price      ["stopPrice" u/parse-double'] ; please ignore when order type is TRAILING_STOP_MARKET
+                          :close-psition   ["closePosition"] ; if Close-All
+                          :symbol          ["symbol"]
+                          :time-in-force   ["timeInForce"] ; "GTC",
+                          :type            ["type"] ; "TRAILING_STOP_MARKET",
+                          :orig-type       ["origType"] ; "TRAILING_STOP_MARKET",
+                          :activate-price  ["activatePrice" u/parse-double'] ; activation price, only return with TRAILING_STOP_MARKET order
+                          :price-rate      ["priceRate" u/parse-float] ; callback rate, only return with TRAILING_STOP_MARKET order
+                          :update-ts       ["updateTime"]
+                          :working-type    ["workingType"] ; "CONTRACT_PRICE",
+                          :price-protect   ["priceProtect"] ; if conditional order trigger is protected   
+                          })
+
 (def recs {:candle    candle-rec
            :candle-ws candle-ws-rec
            :trade-ws  trade-ws-rec})
@@ -367,7 +392,6 @@
 (defn spot-signed-get  [url & args]   (apply signed-request http/get  (str spot-url url) args))
 (defn spot-signed-post [url & args]   (apply signed-request http/post (str spot-url url) args))
 
-
 (def usdm-all-pairs      (partial all-pairs (str usdm-url "/v1/exchangeInfo")))
 
 (def usdm-position-mode  (partial usdm-signed-get "/v1/positionSide/dual"))
@@ -384,20 +408,7 @@
                         :fok "FOK"; (Fill or Kill) orders fills all in its entirety, otherwise, the entire order will be cancelled.
                         :gtx "GTX"; Good Till Crossing (Post Only)
                         })
-
-(defn usdm-new-order!
-  [keys symbol type side & {:keys [time-in-force quantity price] :or {time-in-force :gtc}}]
-  (apply usdm-signed-post "/v1/order" keys
-         :symbol (de-hyphen symbol)
-         :type (order-types type)
-         :side (order-sides side)
-         (concat
-          (when time-in-force
-            [:timeInForce (time-in-force-map time-in-force)])
-          (when quantity
-            [:quantity quantity])
-          (when price
-            [:price price]))))
+(def margin-types {:isolated "ISOLATED" :crossed "CROSSED"})
 
 (defn usdm-cancel-order!
   [keys symbol & {:keys [order-id client-order-id]}]
@@ -498,7 +509,36 @@
     (->> (usdm-signed-get "/v2/positionRisk" acc-keys)
          (map (comp (juxt (comp @symbol-pair-map first) rest)
                     (u/field-parser (cons :symbol fields) usdm-position-rec)))
-         (into {}))))
+         (into {})))
+  (place-order!'
+    [_ keys pair type side {:keys [time-in-force quantity price close-position client-order-id resp-type fields] :or {time-in-force :gtc}}]
+    (let [result (apply usdm-signed-post "/v1/order" keys
+                        :symbol (de-hyphen pair)
+                        :type (type order-types)
+                        :side (side order-sides)
+                        (concat
+                         (when (and time-in-force (not= type :market))
+                           [:timeInForce (time-in-force-map time-in-force)])
+                         (when close-position
+                           [:closePosition close-position])
+                         (when client-order-id
+                           [:newClientOrderId client-order-id])
+                         (when quantity
+                           [:quantity quantity])
+                         (when price
+                           [:price price])
+                         (when resp-type
+                           [:newOrderRespType (resp-type {:ack "ACK" :result "RESULT"})])))]
+      (if fields
+        ((u/field-parser fields usdm-order-resp-rec) result)
+        result)))
+  (setup!'
+    [_ keys pair {:keys [margin-type leverage]}]
+    (when leverage
+      (assert (and (int? leverage) (pos? leverage)))
+      (usdm-signed-post "/v1/leverage" keys :symbol (de-hyphen pair) :leverage leverage))
+    (when margin-type
+      (usdm-signed-post "/v1/marginType" keys :symbol (de-hyphen pair) :marginType (margin-type margin-types)))))
 
 (defn create
   "Create Binance instance"

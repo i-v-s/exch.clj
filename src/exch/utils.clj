@@ -25,9 +25,17 @@
   (gather-ws-loop!  [this push-raw! verbose] "Gather raw data via websockets")
   (get-candles      [this kind fields interval pair start end])
   (order-ticker     [this pair fields])
-  (get-rec          [this kind])
   (get-balance      [this acc-keys fields])
-  (get-positions    [this acc-keys fields]))
+  (get-positions    [this acc-keys fields])
+  (place-order!'    [this ks pair order-type side args])
+  (setup!'          [this ks pair args])
+  (get-rec          [this kind]))
+
+(defn place-order!
+  [exchange keys pair type side & args]
+  (place-order!' exchange keys pair type side args))
+
+(defn setup! [this ks pair & args] (setup!' this ks pair args))
 
 (defmacro with-retry
   "body must return non false value"
