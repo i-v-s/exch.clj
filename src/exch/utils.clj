@@ -1,11 +1,10 @@
 (ns exch.utils
-  (:require
-   [clojure.string :as str]
-   [clojure.data.json :as json]
-   [clojure.tools.logging :refer [warn]]
-   [aleph.http :as http]
-   [byte-streams :as bs]
-   [manifold.stream :as ms]))
+  (:require [clojure.string :as str]
+            [clojure.data.json :as json]
+            [clojure.tools.logging :refer [warn]]
+            [aleph.http :as http]
+            [byte-streams :as bs]
+            [manifold.stream :as ms]))
 
 (import [java.time Instant LocalDateTime ZoneOffset])
 
@@ -29,13 +28,16 @@
   (get-positions    [this acc-keys fields])
   (place-order!'    [this ks pair order-type side args])
   (setup!'          [this ks pair args])
-  (get-rec          [this kind]))
+  (get-rec          [this kind])
+  (info'            [this args]))
 
 (defn place-order!
   [exchange keys pair type side & args]
   (place-order!' exchange keys pair type side args))
 
 (defn setup! [this ks pair & args] (setup!' this ks pair args))
+
+(defn info [this & args] (info' this args))
 
 (defmacro with-retry
   "body must return non false value"

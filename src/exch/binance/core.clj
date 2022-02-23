@@ -1,10 +1,10 @@
-(ns exch.binance
-  (:require
-   [clojure.string :as str]
-   [clojure.walk :as w]
-   [clojure.tools.logging :refer [debug info warn error]]
-   [aleph.http :as http]
-   [exch.utils :as u]))
+(ns exch.binance.core
+  (:require [clojure.tools.logging :refer [debug info warn error]]
+            [clojure.string :as str]
+            [clojure.walk :as w]
+            [aleph.http        :as http]
+            [exch.utils        :as u]
+            [exch.binance.defs :as d]))
 
 (import javax.crypto.Mac)
 (import javax.crypto.spec.SecretKeySpec)
@@ -12,160 +12,6 @@
 
 
 ; Consts and records
-
-(def binance-intervals
-  "Chart intervals: (m)inutes, (h)ours, (d)ays, (w)eeks, (M)onths"
-  ["1m" "3m" "5m" "15m" "30m" "1h" "2h" "4h" "6h" "8h" "12h" "1d" "3d" "1w" "1M"])
-
-(def binance-candles-limit 500)
-
-(def spot-url "https://www.binance.com/api")
-(def spot-ws-url "wss://stream.binance.com:9443")
-(def usdm-url "https://fapi.binance.com/fapi")
-(def usdm-ws-url "wss://fstream.binance.com")
-
-(def base-ws-rec (partial assoc {:event-type ["e"]
-                                 :event-ts   ["E"]
-                                 :symbol     ["s"]}))
-
-(def trade-ws-rec (base-ws-rec
-                   :id        ["t"] ; Trade ID
-                   :price     ["p" u/parse-double']
-                   :quantity  ["q" u/parse-float]
-                   :buyer-id  ["b"]
-                   :seller-id ["a"]
-                   :trade-ts  ["T"]
-                   :buy?      ["m"]))
-
-(def agg-trade-ws-rec (base-ws-rec
-                       :agg-trade-id ["a"]
-                       :price        ["p" u/parse-double']
-                       :quantity     ["q" u/parse-float]
-                       :first-id     ["f"]
-                       :last-id      ["l"]
-                       :trade-ts     ["T"]
-                       :trade-sql-ts ["T" u/sql-ts]
-                       :trade-str-ts ["T" (comp str u/sql-ts)]
-                       :buy?         ["m"]))
-
-(def depth-level-rec {:price    [first u/parse-double']
-                      :quantity [second u/parse-float]})
-
-(def depth-ws-rec (let [pq-map (partial map (u/field-parser [:price :quantity] depth-level-rec))]
-                    (base-ws-rec
-                     :first-id ["U"] ; First update ID in event
-                     :final-id ["u"] ; Final update ID in event
-                     :bids-pq  ["b" pq-map] ; Bids to be updated
-                     :asks-pq  ["a" pq-map] ; Asks to be updated
-                     )))
-
-(def candle-ws-rec (base-ws-rec
-                    :open-ts      ["k" "t"]
-                    :open-ts-sql  ["k" "t" u/sql-ts]
-                    :open-ts-str  ["k" "t" u/sql-ts str]
-                    :close-ts     ["k" "T"]
-                    :close-ts-sql ["k" "T" u/sql-ts]
-                    :close-ts-str ["k" "T" u/sql-ts str]
-                    :inteval      ["k" "i"]
-                    :first-id     ["k" "f"]
-                    :last-id      ["k" "L"]
-                    :open         ["k" "o" u/parse-double']
-                    :close        ["k" "c" u/parse-double']
-                    :high         ["k" "h" u/parse-double']
-                    :low          ["k" "l" u/parse-double']
-                    :volume       ["k" "v" u/parse-float]
-                    :trades       ["k" "n"]
-                    :closed?      ["k" "x"]
-                    :quote        ["k" "q" u/parse-float] ; Quote asset volume
-                    :buy-volume   ["k" "V" u/parse-float]
-                    :buy-quote    ["k" "Q" u/parse-float] ; Taker buy quote asset volume
-                    ))
-
-(def candle-rec {:open-ts      [0]                 ; Open time
-                 :open-ts-sql  [0 u/sql-ts]
-                 :open-ts-str  [0 u/sql-ts str]
-                 :open-ts-ins  [0 u/ts-to-instant]
-                 :open         [1 u/parse-double'] ; Open
-                 :high         [2 u/parse-double'] ; High
-                 :low          [3 u/parse-double'] ; Low
-                 :close        [4 u/parse-double'] ; Close
-                 :volume       [5 u/parse-float]   ; Volume
-                 :close-ts     [6]                 ; Close time
-                 :close-ts-sql [6 u/sql-ts]        ; Close time
-                 :close-ts-str [6 u/sql-ts str]    ; Close time
-                 :close-ts-ins [6 u/ts-to-instant] ; Close time
-                 :quote        [7 u/parse-float]   ; Quote asset volume
-                 :trades       [8]                 ; Number of trades
-                 :buy-volume   [9 u/parse-float]   ; Taker buy base asset volume
-                 :buy-quote    [10 u/parse-float]  ; Taker buy quote asset volume
-                 })
-
-(def order-ticker-rec {:ts         ["time"]
-                       :symbol     ["symbol"]
-                       :bid-price  ["bidPrice" u/parse-double']
-                       :ask-price  ["askPrice" u/parse-double']
-                       :bid-volume ["bidQty" u/parse-float]
-                       :ask-volume ["askQty" u/parse-float]})
-
-(def spot-balance-rec {:asset  ["asset"]
-                       :free   ["free" u/parse-double']
-                       :locked ["locked" u/parse-double']})
-
-(def future-balance-rec {:alias             ["accountAlias"]
-                         :asset             ["asset"]
-                         :balance           ["balance"            u/parse-double'] ; wallet balance
-                         :cross-balance     ["crossWalletBalance" u/parse-double'] ; crossed wallet balance
-                         :cross-pnl         ["crossUnPnl"         u/parse-float]   ; unrealized profit of crossed positions
-                         :free              ["availableBalance"   u/parse-double'] ; available balance
-                         :max-withdraw      ["maxWithdrawAmount"  u/parse-double'] ; maximum amount for transfer out
-                         :margin-available? ["marginAvailable"]                    ; whether the asset can be used as margin in Multi-Assets mode
-                         :update-ts         ["updateTime"]})
-
-(def usdm-position-rec {:entry        ["entryPrice"       u/parse-double']
-                        :margin-type  ["marginType"] ; "isolated"
-                        :auto-add?    ["isAutoAddMargin"] ; "false"
-                        :isolated     ["isolatedMargin"   u/parse-double']
-                        :leverage     ["leverage"         u/parse-int]
-                        :liquidation  ["liquidationPrice" u/parse-double']
-                        :mark         ["markPrice"        u/parse-double']
-                        :max-notional ["maxNotionalValue" u/parse-double']
-                        :amount       ["positionAmt"      u/parse-float]
-                        :symbol       ["symbol"]
-                        :profit       ["unRealizedProfit" u/parse-float]
-                        :side         ["positionSide"] ; "BOTH"
-                        :update-ts    ["updateTime"]})
-
-(def usdm-order-resp-rec {:client-order-id ["clientOrderId"]
-                          :cum-qty         ["cumQty" u/parse-float]
-                          :cum-quote       ["cumQuote" u/parse-float]
-                          :executed-qty    ["executedQty" u/parse-float]
-                          :id              ["orderId" u/parse-int]
-                          :avg-price       ["avgPrice" u/parse-double']
-                          :original-qty    ["origQty" u/parse-float]
-                          :price           ["price" u/parse-double']
-                          :reduce-only     ["reduceOnly"]
-                          :side            ["side" str/lower-case keyword]
-                          :position-side   ["positionSide" str/lower-case keyword]
-                          :status          ["status" str/lower-case keyword]
-                          :stop-price      ["stopPrice" u/parse-double'] ; please ignore when order type is TRAILING_STOP_MARKET
-                          :close-psition   ["closePosition"] ; if Close-All
-                          :symbol          ["symbol"]
-                          :time-in-force   ["timeInForce"] ; "GTC",
-                          :type            ["type"] ; "TRAILING_STOP_MARKET",
-                          :orig-type       ["origType"] ; "TRAILING_STOP_MARKET",
-                          :activate-price  ["activatePrice" u/parse-double'] ; activation price, only return with TRAILING_STOP_MARKET order
-                          :price-rate      ["priceRate" u/parse-float] ; callback rate, only return with TRAILING_STOP_MARKET order
-                          :update-ts       ["updateTime"]
-                          :working-type    ["workingType"] ; "CONTRACT_PRICE",
-                          :price-protect   ["priceProtect"] ; if conditional order trigger is protected   
-                          })
-
-(def recs {:candle    candle-rec
-           :candle-ws candle-ws-rec
-           :trade-ws  trade-ws-rec})
-
-(def spot-info-query (str spot-url "/v3/exchangeInfo"))
-(def usdm-info-query (str usdm-url "/v1/exchangeInfo"))
 
 
 ; Functions
@@ -387,12 +233,12 @@
                                  "X-MBX-APIKEY" api-key}
                        :params (apply signature secret-key params)))
 
-(defn usdm-signed-get  [url & args]   (apply signed-request http/get  (str usdm-url url) args))
-(defn usdm-signed-post [url & args]   (apply signed-request http/post (str usdm-url url) args))
-(defn spot-signed-get  [url & args]   (apply signed-request http/get  (str spot-url url) args))
-(defn spot-signed-post [url & args]   (apply signed-request http/post (str spot-url url) args))
+(defn usdm-signed-get  [url & args]   (apply signed-request http/get  (str d/usdm-url url) args))
+(defn usdm-signed-post [url & args]   (apply signed-request http/post (str d/usdm-url url) args))
+(defn spot-signed-get  [url & args]   (apply signed-request http/get  (str d/spot-url url) args))
+(defn spot-signed-post [url & args]   (apply signed-request http/post (str d/spot-url url) args))
 
-(def usdm-all-pairs      (partial all-pairs (str usdm-url "/v1/exchangeInfo")))
+(def usdm-all-pairs      (partial all-pairs (str d/usdm-url "/v1/exchangeInfo")))
 
 (def usdm-position-mode  (partial usdm-signed-get "/v1/positionSide/dual"))
 (def usdm-income-history (partial usdm-signed-get "/v1/income"))
@@ -413,7 +259,7 @@
 (defn usdm-cancel-order!
   [keys symbol & {:keys [order-id client-order-id]}]
   (assert (or order-id client-order-id))
-  (apply signed-request http/delete (str usdm-url "/v1/order") keys
+  (apply signed-request http/delete (str d/usdm-url "/v1/order") keys
          :symbol (de-hyphen symbol)
          (concat
           (when order-id
@@ -428,11 +274,11 @@
   u/Exchange
   ; WS streams
   (open-streams [_ streams]
-    (open-streams spot-ws-url streams))
+    (open-streams d/spot-ws-url streams))
   (trade-stream [this pairs fields]
-    (pair-stream trade-ws-rec "trade" this pairs fields))
+    (pair-stream d/trade-ws-rec "trade" this pairs fields))
   (agg-trade-stream [this pairs fields]
-    (pair-stream agg-trade-ws-rec "aggTrade" this pairs fields))
+    (pair-stream d/agg-trade-ws-rec "aggTrade" this pairs fields))
   (gather-ws-loop! [this push-raw! _]
     (let [{pairs :pairs trades :t} raw
           pairs-map (zipmap (map lower-pair pairs) pairs)
@@ -465,50 +311,57 @@
               (throw e)))
           (warn "Binance: unknown stream pair" stream "pair was" pair-id)))))
   ; REST
-  (get-all-pairs [_] (all-pairs spot-info-query))
+  (get-all-pairs [_] (all-pairs d/spot-info-query))
   (get-candles [_ _ fields interval pair start end]
-    (get-candles (str spot-url "/v3/klines") pair interval :start start :end end :ts (u/field-parser fields candle-rec)))
+    (get-candles (str d/spot-url "/v3/klines") pair interval :start start :end end :ts (u/field-parser fields d/candle-rec)))
   (order-ticker [_ pair fields]
-    (-> (str usdm-url "/v3/ticker/bookTicker") (u/http-get-json :params [:symbol (de-hyphen pair)]) ((u/field-parser fields order-ticker-rec))))
-  (get-rec [_ kind] (kind recs))
+    (-> (str d/usdm-url "/v3/ticker/bookTicker") (u/http-get-json :params [:symbol (de-hyphen pair)]) ((u/field-parser fields d/order-ticker-rec))))
+  (get-rec [_ kind] (kind d/recs))
   (get-balance [_ acc-keys fields]
     (->> (get (spot-signed-get "/v3/account" acc-keys) "balances")
          (map (comp (juxt first rest)
-                    (u/field-parser (cons :asset fields) spot-balance-rec)))
+                    (u/field-parser (cons :asset fields) d/spot-balance-rec)))
          (into {}))))
 
 (defrecord BinanceUSDM [name intervals-map symbol-pair-map candles-limit raw candles]
   u/Exchange
   ; WS streams
   (open-streams [_ streams]
-    (open-streams usdm-ws-url streams))
+    (open-streams d/usdm-ws-url streams))
   (agg-trade-stream [this pairs fields]
-    (pair-stream agg-trade-ws-rec "aggTrade" this pairs fields))
+    (pair-stream d/agg-trade-ws-rec "aggTrade" this pairs fields))
   (candle-stream [this _ tf pairs fields]
     (assert (keyword? tf))
-    (pair-stream candle-ws-rec (str "kline_" (clojure.core/name tf)) this pairs fields))
+    (pair-stream d/candle-ws-rec (str "kline_" (clojure.core/name tf)) this pairs fields))
   ; REST
-  (get-all-pairs [_] (all-pairs usdm-info-query))
+  (info' [_ {:keys [assets pairs]}]
+    (let [data (u/http-get-json d/usdm-info-url)
+          result (remove nil? [(when assets
+                                 (map (u/field-parser assets d/usdm-info-asset-rec) (data "assets")))
+                               (when pairs
+                                 (map (u/field-parser pairs d/usdm-info-symbol-rec) (data "symbols")))])]
+      (if (-> result count (= 1)) (first result) result)))
+  (get-all-pairs [_] (all-pairs d/usdm-info-url))
   (get-candles [_ kind fields interval pair start end]
-    (get-candles (str usdm-url (case kind
-                                 nil    "/v1/klines"
-                                 :cont  "/v1/continuousKlines"
-                                 :index "/v1/indexPriceKlines"
-                                 :mark  "/v1/markPriceKlines"))
+    (get-candles (str d/usdm-url (case kind
+                                   nil    "/v1/klines"
+                                   :cont  "/v1/continuousKlines"
+                                   :index "/v1/indexPriceKlines"
+                                   :mark  "/v1/markPriceKlines"))
                  pair interval :start start :end end
-                 :ts (u/field-parser fields candle-rec)))
+                 :ts (u/field-parser fields d/candle-rec)))
   (order-ticker [_ pair fields]
-    (-> (str usdm-url "/v1/ticker/bookTicker") (u/http-get-json :params [:symbol (de-hyphen pair)]) ((u/field-parser fields order-ticker-rec))))
-  (get-rec [_ kind] (kind recs))
+    (-> (str d/usdm-url "/v1/ticker/bookTicker") (u/http-get-json :params [:symbol (de-hyphen pair)]) ((u/field-parser fields d/order-ticker-rec))))
+  (get-rec [_ kind] (kind d/recs))
   (get-balance [_ acc-keys fields]
     (->> (usdm-signed-get "/v2/balance" acc-keys)
          (map (comp (juxt first rest)
-                    (u/field-parser (cons :asset fields) future-balance-rec)))
+                    (u/field-parser (cons :asset fields) d/future-balance-rec)))
          (into {})))
   (get-positions [_ acc-keys fields]
     (->> (usdm-signed-get "/v2/positionRisk" acc-keys)
          (map (comp (juxt (comp @symbol-pair-map first) rest)
-                    (u/field-parser (cons :symbol fields) usdm-position-rec)))
+                    (u/field-parser (cons :symbol fields) d/usdm-position-rec)))
          (into {})))
   (place-order!'
     [_ keys pair type side {:keys [time-in-force quantity price close-position client-order-id resp-type fields] :or {time-in-force :gtc}}]
@@ -530,7 +383,7 @@
                          (when resp-type
                            [:newOrderRespType (resp-type {:ack "ACK" :result "RESULT"})])))]
       (if fields
-        ((u/field-parser fields usdm-order-resp-rec) result)
+        ((u/field-parser fields d/usdm-order-resp-rec) result)
         result)))
   (setup!'
     [_ keys pair {:keys [margin-type leverage]}]
@@ -544,5 +397,5 @@
   "Create Binance instance"
   [kind]
   (case kind
-    :spot (Binance.     "Binance"      (zipmap (map keyword binance-intervals) binance-intervals) binance-candles-limit nil nil)
-    :usdm (BinanceUSDM. "Binance-USDM" (zipmap (map keyword binance-intervals) binance-intervals) (delay (symbol-pair-map usdm-info-query)) binance-candles-limit nil nil)))
+    :spot (Binance.     "Binance"      (zipmap (map keyword d/binance-intervals) d/binance-intervals) d/binance-candles-limit nil nil)
+    :usdm (BinanceUSDM. "Binance-USDM" (zipmap (map keyword d/binance-intervals) d/binance-intervals) (delay (symbol-pair-map d/usdm-info-url)) d/binance-candles-limit nil nil)))
