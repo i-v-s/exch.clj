@@ -204,15 +204,20 @@
        trading-symbols
        (map #(str (:baseAsset %) "-" (:quoteAsset %)))))
 
+(defn usdm-pair
+  [base quote contract-type]
+  (->> (case contract-type
+         "CURRENT_QUARTER" "-Q"
+         "PERPETUAL" ""
+         "" ""
+         (throw (Exception. (str "Binance: unknown contract type" contract-type))))
+       (str base "-" quote)))
+
 (defn symbol-pair-map
   [url]
   (into {}
         (for [{base :baseAsset quote :quoteAsset symbol :symbol ct :contractType} (trading-symbols url)]
-          [symbol (->> (case ct
-                         "CURRENT_QUARTER" "-Q"
-                         "PERPETUAL" ""
-                         (throw (Exception. (str "Binance: unknown contract type" ct))))
-                       (str base "-" quote))])))
+          [symbol (usdm-pair base quote ct)])))
 
 ; Signed functions
 
@@ -339,7 +344,12 @@
           result (remove nil? [(when assets
                                  (map (u/field-parser assets d/usdm-info-asset-rec) (data "assets")))
                                (when pairs
-                                 (map (u/field-parser pairs d/usdm-info-symbol-rec) (data "symbols")))])]
+                                 (into {} (map
+                                           (comp
+                                            (juxt (comp (partial apply usdm-pair) first) second)
+                                            (partial split-at 3)
+                                            (u/field-parser (concat [:base-asset :quote-asset :contract-type] pairs) d/usdm-info-symbol-rec))
+                                           (data "symbols"))))])]
       (if (-> result count (= 1)) (first result) result)))
   (get-all-pairs [_] (all-pairs d/usdm-info-url))
   (get-candles [_ kind fields interval pair start end]
