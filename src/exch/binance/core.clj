@@ -374,7 +374,7 @@
                     (u/field-parser (cons :symbol fields) d/usdm-position-rec)))
          (into {})))
   (place-order!'
-    [_ keys pair type side {:keys [time-in-force quantity price close-position client-order-id resp-type fields] :or {time-in-force :gtc}}]
+    [_ keys pair type side {:keys [time-in-force quantity price reduce-only close-position client-order-id resp-type fields] :or {time-in-force :gtc}}]
     (let [result (apply usdm-signed-post "/v1/order" keys
                         :symbol (de-hyphen pair)
                         :type (type order-types)
@@ -382,6 +382,8 @@
                         (concat
                          (when (and time-in-force (not= type :market))
                            [:timeInForce (time-in-force-map time-in-force)])
+                         (when reduce-only
+                           [:reduceOnly reduce-only])
                          (when close-position
                            [:closePosition close-position])
                          (when client-order-id
