@@ -207,10 +207,11 @@
 (defn usdm-pair
   [base quote contract-type]
   (->> (case contract-type
-         "CURRENT_QUARTER" "-Q"
-         "PERPETUAL" ""
+         "CURRENT_QUARTER" "-CQ"
+         "NEXT_QUARTER"    "-NQ"
+         "PERPETUAL"       ""
          "" ""
-         (throw (Exception. (str "Binance: unknown contract type" contract-type))))
+         (throw (Exception. (str "Binance: unknown contract type " contract-type))))
        (str base "-" quote)))
 
 (defn symbol-pair-map
